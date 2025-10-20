@@ -9,19 +9,6 @@ export const specialNames = ["Collapse Tag Configure Options", "Hide Bullets", "
 
 export const specialNameParts = ["query:", "contains:"];
 
-// -> index
-// Constants for time in milliseconds
-const MS_PER_MINUTE = 60 * 1000;
-const MS_PER_HOUR = 60 * MS_PER_MINUTE;
-const MS_PER_DAY = 24 * MS_PER_HOUR;
-
-const DEFAULT_AGAIN = 30 * MS_PER_MINUTE;
-const DEFAULT_HARD = 12 * MS_PER_HOUR;
-const DEFAULT_GOOD = 2 * MS_PER_DAY;
-const DEFAULT_EASY = 4 * MS_PER_DAY;
-
-// --- Inheritance via "extends" descriptor helpers ---
-// Finds the child descriptor named exactly "extends" (case-insensitive)
 export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem): Promise<Rem | undefined> {
   try {
     const children = await rem.getChildrenRem();
@@ -60,14 +47,6 @@ export async function isReferencingRem(plugin: RNPlugin, rem: Rem): Promise<bool
   if (!rem) return false;
   const parents = await getExtendsParents(plugin, rem);
   return parents.length > 0;
-}
-
-// -> AbstractionAndInheritance
-async function isReferencingRem_(plugin: RNPlugin, rem: Rem): Promise<boolean> {
-    if(rem)
-    return (await rem.remsBeingReferenced()).length != 0;
-
-    return false;
 }
 
 // -> AbstractionAndInheritance

@@ -1,22 +1,22 @@
 {
+  "author": "Michael",
+  "name": "QueueCreator",
+  "description": "Sidebar widget that allows to generate queues with a variety of filters.",
+  "enableOnMobile": true,
+  "repoUrl": "https://github.com/zmicha-code/QueueCreator",
+  "id": "zmicha-QueueCreator",
   "manifestVersion": 1,
-  "id": "plugin_template",
-  "name": "Plugin Template",
-  "author": "remnote",
-  "repoUrl": "",
   "version": {
     "major": 0,
     "minor": 0,
     "patch": 1
   },
-  "theme": [],
-  "enableOnMobile": false,
-  "description": "",
   "requestNative": false,
   "requiredScopes": [
     {
       "type": "All",
       "level": "Read"
     }
-  ]
+  ],
+  "unlisted": true
 }

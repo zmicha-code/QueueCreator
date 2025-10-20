@@ -1,0 +1,1 @@
+Sidebar widget that allows to generate queues with a variety of filters. 

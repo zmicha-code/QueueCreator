@@ -1,42 +1,67 @@
-import { declareIndexPlugin, type ReactRNPlugin, WidgetLocation } from '@remnote/plugin-sdk';
+import {
+  Card,
+  declareIndexPlugin,
+  QueueInteractionScore,
+  ReactRNPlugin,
+  WidgetLocation,
+  AppEvents,
+} from '@remnote/plugin-sdk';
+
+//import { getLastInterval, getWrongInRow } from './customQueueWidget';
 import '../style.css';
-import '../index.css'; // import <widget-name>.css
+import '../App.css';
 
 async function onActivate(plugin: ReactRNPlugin) {
-  // Register settings
-  await plugin.settings.registerStringSetting({
-    id: 'name',
-    title: 'What is your Name?',
-    defaultValue: 'Bob',
-  });
+  //
+  plugin.event.addListener(AppEvents.QueueLoadCard, undefined, 
+    async function onQueueLoadCard(event: any) {
+    
+      if(event.cardId) {
+        //currentCard = await plugin.card.findOne(event.cardId);
 
-  await plugin.settings.registerBooleanSetting({
-    id: 'pizza',
-    title: 'Do you like pizza?',
-    defaultValue: true,
-  });
+        // Provide Information For Widget
+        await plugin.storage.setSynced("currentQueueCardId", event.cardId);
+        //const lastInterval = getLastInterval(currentCard?.repetitionHistory)
+        //if(lastInterval) {
+        //  await plugin.storage.setSynced("currentQueueCardInterval", lastInterval.workingInterval);
+        //  await plugin.storage.setSynced("currentQueueCardDate", lastInterval.intervalSetOn + lastInterval.workingInterval);
+        //  await plugin.storage.setSynced("currentQueueCardRating", getLastRatingStr(currentCard?.repetitionHistory));
+        //}
+      }
+    }
+  );
 
-  await plugin.settings.registerNumberSetting({
-    id: 'favorite-number',
-    title: 'What is your favorite number?',
-    defaultValue: 42,
-  });
+  plugin.event.addListener(AppEvents.QueueCompleteCard, undefined,
+    async function onQueueCompleteCard(event: any) {
+      const cardId = event.cardId as string;
+  
+      // Fetch the card
+      const card = await plugin.card.findOne(cardId);
+  
+      if (card && card.repetitionHistory && card.repetitionHistory.length > 0) {
+        const lastScore = card.repetitionHistory[card.repetitionHistory.length - 1].score;
+  
+        if (
+          lastScore === QueueInteractionScore.HARD ||
+          lastScore === QueueInteractionScore.GOOD ||
+          lastScore === QueueInteractionScore.EASY
+        ) {
+          // Get the current array from storage
+          const currentQueueCardIds: string[] = (await plugin.storage.getSynced("currentQueueCardIds")) || [];
+  
+          // Remove the cardId from the array
+          const updatedQueueCardIds = currentQueueCardIds.filter(id => id !== cardId);
+  
+          // Save the updated array back to storage
+          await plugin.storage.setSynced("currentQueueCardIds", updatedQueueCardIds);
+        }
+      }
+    }
+  );  
 
-  // A command that inserts text into the editor if focused.
-  await plugin.app.registerCommand({
-    id: 'editor-command',
-    name: 'Editor Command',
-    action: async () => {
-      plugin.editor.insertPlainText('Hello World!');
-    },
-  });
-
-  // Show a toast notification to the user.
-  await plugin.app.toast("I'm a toast!");
-
-  // Register a sidebar widget.
-  await plugin.app.registerWidget('sample_widget', WidgetLocation.RightSidebar, {
+  await plugin.app.registerWidget('customQueueWidget', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
+    widgetTabIcon: "https://i.imgur.com/nGwgOpN.png"
   });
 }
 

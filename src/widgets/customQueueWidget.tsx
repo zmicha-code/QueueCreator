@@ -2,7 +2,7 @@ import { PowerupSlotCodeMap, usePlugin, renderWidget, Queue, Rem, Card, RNPlugin
 } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 // import MyRemNoteButton from '../components/MyRemNoteButton';
-import MyRemNoteButton from '../components/MyRemnoteButton';
+import MyRemNoteButton, { MyRemNoteButtonSmall } from '../components/MyRemnoteButton';
 
 // -> AbstractionAndInheritance
 export const specialNames = ["Collapse Tag Configure Options", "Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Alias", "Aliases", "Bullet Icon"]; // , "Definition", "Eigenschaften"
@@ -1335,15 +1335,17 @@ async function questionsFromCards_(plugin: RNPlugin, cards: Card[]): Promise<str
   return questions;
 }
 
-// Updated to return an array of { id, text } objects
-async function questionsFromCards(plugin: RNPlugin, cards: Card[]): Promise<{ id: string, text: string, nextDate: number }[]> {
-    const questions: { id: string, text: string, nextDate: number }[] = [];
+// Updated to return an array of { id, text, nextDate, interval, lastRating } objects
+async function questionsFromCards(plugin: RNPlugin, cards: Card[]): Promise<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[]> {
+    const questions: { id: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[] = [];
     for (const c of cards) {
         const rem = await c.getRem();
         const text = rem ? await getRemText(plugin, rem) : '';
 
         const lastInterval = getLastInterval(c.repetitionHistory);
-        questions.push({ id: rem ? rem._id : c._id, text, nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0});
+        const lastRatings = getLastRatingStr(c.repetitionHistory, 3);
+        const interval = lastInterval ? formatMilliseconds(lastInterval.workingInterval) : '';
+        questions.push({ id: rem ? rem._id : c._id, text, nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0, interval, lastRatings });
     }
     return questions;
 }
@@ -1367,8 +1369,52 @@ function CustomQueueWidget() {
     const [buildQueueRemText, setBuildQueueRemText] = useState<string>("");
     const [isListExpanded, setIsListExpanded] = useState<boolean>(false);
     // Updated state type to array of objects
-    const [cardsData, setCardsData] = useState<{ id: string, text: string , nextDate: number}[]>([]);
+    const [cardsData, setCardsData] = useState<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[]>([]);
+    const [sortColumn, setSortColumn] = useState<'text' | 'nextDate' | 'interval' | 'lastRating'>('nextDate');
     const [sortAscending, setSortAscending] = useState<boolean>(true);
+
+    const handleSort = (column: 'text' | 'nextDate' | 'interval' | 'lastRating') => {
+      if (sortColumn === column) {
+        setSortAscending(!sortAscending);
+      } else {
+        setSortColumn(column);
+        setSortAscending(true);
+      }
+      setIsListExpanded(true);
+    };
+
+    const ratingOrder: Record<string, number> = {
+      'Easily recalled': 4,
+      'Recalled with effort': 3,
+      'Partially recalled': 2,
+      'Forgot': 1,
+      'Reset': 0,
+      '': -1,
+    };
+
+    const getSortedCardsData = () => {
+      return [...cardsData].sort((a, b) => {
+        let comparison = 0;
+        switch (sortColumn) {
+          case 'text':
+            //comparison = a.text.localeCompare(b.text);
+            comparison = a.text.localeCompare(b.text, undefined, { numeric: true })
+            break;
+          case 'nextDate':
+            comparison = a.nextDate - b.nextDate;
+            break;
+          case 'interval':
+            comparison = a.interval.localeCompare(b.interval);
+            break;
+          case 'lastRating':
+            const ratingA = ratingOrder[a.lastRatings[0]] ?? -1;
+            const ratingB = ratingOrder[b.lastRatings[0]] ?? -1;
+            comparison = ratingA - ratingB;
+            break;
+        }
+        return sortAscending ? comparison : -comparison;
+      });
+    };
 
     //
     const [isBuildQueueExpanded, setIsBuildQueueExpanded] = useState<boolean>(false);
@@ -1577,6 +1623,87 @@ function CustomQueueWidget() {
         }
     };
 
+    const exportQueueToXml = async () => {
+        const sortedData = getSortedCardsData();
+        
+        let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+        xml += '<queue>\n';
+        xml += `  <name>${escapeXml(queueRemText || 'Untitled Queue')}</name>\n`;
+        xml += `  <exportDate>${new Date().toISOString()}</exportDate>\n`;
+        xml += `  <totalCards>${sortedData.length}</totalCards>\n`;
+        xml += '  <cards>\n';
+        
+        sortedData.forEach((card, index) => {
+            xml += '    <card>\n';
+            xml += `      <index>${index + 1}</index>\n`;
+            xml += `      <id>${escapeXml(card.id)}</id>\n`;
+            xml += `      <question>${escapeXml(card.text)}</question>\n`;
+            xml += `      <nextDate>${new Date(card.nextDate).toISOString()}</nextDate>\n`;
+            xml += `      <interval>${escapeXml(card.interval)}</interval>\n`;
+            xml += '      <lastRatings>\n';
+            card.lastRatings.forEach((rating) => {
+                xml += `        <rating>${escapeXml(rating)}</rating>\n`;
+            });
+            xml += '      </lastRatings>\n';
+            xml += '    </card>\n';
+        });
+        
+        xml += '  </cards>\n';
+        xml += '</queue>';
+        
+        try {
+            // Try using the Clipboard API first
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(xml);
+            } else {
+                // Fallback: create a temporary textarea element
+                const textArea = document.createElement('textarea');
+                textArea.value = xml;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-9999px';
+                textArea.style.top = '-9999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            }
+            await plugin.app.toast("XML copied to clipboard!");
+        } catch (err) {
+            console.error("Failed to copy to clipboard:", err);
+            // Try the fallback method even if the first attempt failed
+            try {
+                const textArea = document.createElement('textarea');
+                textArea.value = xml;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-9999px';
+                textArea.style.top = '-9999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                const success = document.execCommand('copy');
+                document.body.removeChild(textArea);
+                if (success) {
+                    await plugin.app.toast("XML copied to clipboard!");
+                } else {
+                    await plugin.app.toast("Failed to copy to clipboard");
+                }
+            } catch (fallbackErr) {
+                console.error("Fallback copy also failed:", fallbackErr);
+                await plugin.app.toast("Failed to copy to clipboard");
+            }
+        }
+    };
+
+    const escapeXml = (str: string): string => {
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    };
+
     const openCurrentFlashcard = async () => {
         const currentCard = cards.find((card) => card._id === currentCardId);
         const rem = await currentCard?.getRem();
@@ -1755,65 +1882,38 @@ function CustomQueueWidget() {
                 <button style={{ width: "100%" }} onClick={toogleCardList}>{isListExpanded ? "- Current Queue" : "+ Current Queue"} ({cardsData.length})</button>
                 {isListExpanded && (
                   <div style={{ marginTop: "10px" }}>
-                    <MyRemNoteButton text={queueRemText ? queueRemText : "No Rem selected"} onClick={openCurrentQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
-                    <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "10px" }}>
+                    <div style={{ display: "flex", gap: "10px", marginBottom: "10px" }}>
+                      <MyRemNoteButton text={queueRemText ? queueRemText : "No Rem selected"} onClick={openCurrentQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
+                      <MyRemNoteButton text="Export Queue" onClick={exportQueueToXml} img="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3" />
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "10px", tableLayout: "fixed", fontSize: "12px" }}>
                       <thead>
                         <tr>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Question</th>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}><MyRemNoteButton text="Next Date" onClick={() => { setSortAscending(!sortAscending); setIsListExpanded(true); }} /></th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "60%" }}><MyRemNoteButtonSmall text={`Question ${sortColumn === 'text' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('text')} /></th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "15%" }}><MyRemNoteButtonSmall text={`Next Date ${sortColumn === 'nextDate' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('nextDate')} /></th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "15%" }}><MyRemNoteButtonSmall text={`Interval ${sortColumn === 'interval' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('interval')} /></th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "10%" }}><MyRemNoteButtonSmall text={`Last Rating ${sortColumn === 'lastRating' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('lastRating')} /></th>
                         </tr>
                       </thead>
                       <tbody>
-                        {[...cardsData].sort((a, b) => (sortAscending ? a.nextDate - b.nextDate : b.nextDate - a.nextDate)).map((c) => (
+                        {getSortedCardsData().map((c) => (
                           <tr key={c.id}>
-                            <td style={{ border: "1px solid #ddd", padding: 8 }}><MyRemNoteButton text={c.text} onClick={async () => { openRem(plugin, c.id); }} /></td>
+                            <td style={{ border: "1px solid #ddd", padding: 8 }}><MyRemNoteButtonSmall text={c.text} onClick={async () => { openRem(plugin, c.id); }} /></td>
                             <td style={{ border: "1px solid #ddd", padding: 8 }}>{formatMilliseconds(c.nextDate - Date.now())}</td>
+                            <td style={{ border: "1px solid #ddd", padding: 8 }}>{c.interval}</td>
+                            <td style={{ border: "1px solid #ddd", padding: 8, textAlign: "center" }}>
+                              {c.lastRatings.length > 0 && (
+                                c.lastRatings.slice().reverse().map((rating, index) => (
+                                  <img
+                                    key={index}
+                                    style={{ width: '16px', height: '16px', marginRight: index < c.lastRatings.length - 1 ? '3px' : '0' }}
+                                    src={scoreToImage.get(rating)}
+                                  />
+                                ))
+                              )}
+                            </td>
                           </tr>
                         ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, }}>
-              <div style={{ width: "100%", maxHeight: "600px", padding: "10px", border: "1px solid #ddd", marginRight: "20px" }}>
-                <button style={{ width: "100%" }} onClick={toggleTableExpansion}>{isTableExpanded ? "- Card Information" : "+ Card Information"}: {currentCardText}</button>
-                {isTableExpanded && (
-                  <div style={{ marginTop: "10px" }}>
-                    <MyRemNoteButton text="Open" onClick={openCurrentFlashcard} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
-                    <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "10px" }}>
-                      <thead>
-                        <tr>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Due</th>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Interval</th>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Rating</th>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Practice</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardRepetitionTiming == 0 ? "" : currentCardRepetitionTiming < 0 ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")" : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}</td>
-                          <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastInterval}</td>
-                          <td style={{ border: "1px solid #ddd", padding: 8, textAlign: "center" }}>
-                            {currentCardLastRating.length > 0 ? (
-                              currentCardLastRating.slice().reverse().map((rating, index) => (
-                                <img
-                                  key={index}
-                                  style={{
-                                    width: '20px',
-                                    height: '20px',
-                                    marginRight: index < currentCardLastRating.length - 1 ? '5px' : '0'
-                                  }}
-                                  src={scoreToImage.get(rating)}
-                                />
-                              ))
-                            ) : (
-                              <div></div>
-                            )}
-                          </td>
-                          <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastPractice}</td>
-                        </tr>
                       </tbody>
                     </table>
                   </div>

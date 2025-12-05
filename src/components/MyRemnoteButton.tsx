@@ -40,4 +40,37 @@ const MyRemNoteButton: React.FC<MyRemNoteButtonProps> = ({ img, text, onClick, a
   );
 };
 
+export const MyRemNoteButtonSmall: React.FC<MyRemNoteButtonProps> = ({ img, text, onClick, active = true }) => {
+  return (
+    <button
+      className={`py-1 px-2 h-6 rn-clr-background-primary inline-flex items-center rounded-md border-0 ${
+        active
+          ? 'hover:bg-gray-5 text-gray-100'
+          : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+      }`}
+      onClick={onClick}
+    >
+      {img && (
+        <div style={{ display: 'flex', alignItems: 'center', paddingRight: '6px' }}>
+          <svg
+            viewBox="0 0 24 24"
+            xmlns="http://www.w3.org/2000/svg"
+            style={{ width: '12px', minWidth: '12px', height: '12px', minHeight: '12px' }}
+            fill="none"
+          >
+            <path
+              d={img}
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+            />
+          </svg>
+        </div>
+      )}
+      <span className="text-black" style={{ fontSize: '12px' }}>{text}</span>
+    </button>
+  );
+};
+
 export default MyRemNoteButton;

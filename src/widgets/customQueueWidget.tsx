@@ -601,12 +601,19 @@ interface SearchOptions {
 // Helper function assumed to be defined elsewhere
 //function isDue(card: Card): boolean {
 function isDue(card: SearchData): boolean {
+  if (!card.card) return false; // Disabled flashcards have no card, treat as not due
   const lastInterval = getLastInterval(card.card.repetitionHistory);
   return lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() < 0 : true;
 }
 
-async function isDisabled(plugin: RNPlugin, card: SearchData) {
-  return await hasTag(plugin, card.rem, "DISABLED");
+// A rem is disabled if it's a flashcard (has children with isCardItem) but getCards returns empty
+async function isDisabled(plugin: RNPlugin, rem: Rem): Promise<boolean> {
+  const cards = await rem.getCards();
+  if (cards.length > 0) {
+    return false; // Has cards, so not disabled
+  }
+  // Check if it's a flashcard by looking for isCardItem children
+  return await isFlashcard(plugin, rem);
 }
 
 async function addCards(plugin: RNPlugin,
@@ -642,50 +649,29 @@ async function addCards(plugin: RNPlugin,
   }
 }
 
-/*
-async function addCards(plugin: RNPlugin,
-                        rem: Rem,
-                        cards: Card[],
-                        searchOptions: SearchOptions,
-                        addedCardIds: Set<string>,
-                        //isRef: boolean,
-                        cardPath:string) {
-  const remCards = rem.getCards ? await rem.getCards() : [];
-
-  for (const card of remCards) {
-    if (!addedCardIds.has(card._id)) {
-      addedCardIds.add(card._id);
-
-      console.log("Adding " + await getRemText(plugin, rem) + " (" + cardPath + ")");
-
-      if (!searchOptions.dueOnly || isDue(card)) {
-
-        //if(!searchOptions.referencedOnly || isRef) {
-          cards.push(card);
-        //}
-      }
-    } //else {
-      // CORRECT?: If the card was added through Reference but is also included in the normal Hierarchy (not through ref) delete it if referencedOnly = true
-      //if (searchOptions.referencedOnly && !isRef) {
-      //  const index = cards.findIndex(c => c._id === card._id);
-      //  if (index !== -1) {
-      //    cards.splice(index, 1);
-      //  }
-      //  }
-    //}
-  }
-}
-  */
-
 interface SearchData {
   rem: Rem,
-  card: Card
+  card: Card | null  // null for disabled flashcards
 }
+
+// Add a disabled flashcard (no card object) to the collection
+async function addDisabledFlashcard(plugin: RNPlugin,
+                                     rem: Rem,
+                                     cards: SearchData[],
+                                     addedRemIds: Set<string>,
+                                     cardPath: string) {
+  if (!addedRemIds.has(rem._id)) {
+    addedRemIds.add(rem._id);
+    cards.push({ rem: rem, card: null });
+  }
+}
+
 async function getCardsOfRem( plugin: RNPlugin,
                               rem: Rem,
                               searchOptions: SearchOptions,
                               processed = new Set<string>(),
                               addedCardIds = new Set<string>(),
+                              addedDisabledRemIds = new Set<string>(),
                               cardPath: string = ""): Promise<SearchData[]> {
   // A Rem might appear as [[Rem]] in an answer (searchOptions.includeDescendants = false) and then later regulary (includeDescendants = true). 
   // Checking this would then prevent the full recursion because the Rem was already visited with lesser search depth
@@ -701,8 +687,15 @@ async function getCardsOfRem( plugin: RNPlugin,
   let childrenRem = await getCleanChildrenAll(plugin, rem);
 
   const flashcard = await isFlashcard(plugin, rem);
-  // FLASHCARD: Add cards from this rem, filtered by due if specified
-  if(flashcard) {
+  const disabled = await isDisabled(plugin, rem);
+  
+  // DISABLED FLASHCARD: Add disabled flashcards (no card object)
+  if (flashcard && disabled) {
+    await addDisabledFlashcard(plugin, rem, cards, addedDisabledRemIds, cardPath + "->" + await getRemText(plugin, rem));
+  }
+  
+  // FLASHCARD: Add cards from this rem (only if not disabled)
+  if (flashcard && !disabled) {
     await addCards(plugin, rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
   }
   
@@ -736,6 +729,7 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                       includeReferencingRem: false},
                                                     processed,
                                                     addedCardIds,
+                                                    addedDisabledRemIds,
                                                     "->" + await getRemText(plugin, rem)));
         // If includeReferencedRem == true these should already be included?
         if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
@@ -778,6 +772,7 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                       includeReferencingRem: false},
                                                     processed,
                                                     addedCardIds,
+                                                    addedDisabledRemIds,
                                                     "->" + await getRemText(plugin, rem)));
         }
       }
@@ -827,6 +822,7 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                       searchOptions,
                                                       processed,
                                                       addedCardIds,
+                                                      addedDisabledRemIds,
                                                       "->" + await getRemText(plugin, rem))); // { ...searchOptions, invertedDirection: false }
           }
       }
@@ -842,6 +838,7 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                 {...searchOptions, includeDescendants: false},
                                                 processed,
                                                 addedCardIds,
+                                                addedDisabledRemIds,
                                                 "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
       cards = cards.concat(ancestorCards);
     }
@@ -856,6 +853,7 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                   { ...searchOptions, includeAncestors: false, includeDescendants: false },
                                                   processed,
                                                   addedCardIds,
+                                                  addedDisabledRemIds,
                                                   "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
         cards = cards.concat(ancestorCards);
       }
@@ -874,6 +872,7 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                 {...searchOptions, includeAncestors: false, includeDescendants: true},
                                                 processed,
                                                 addedCardIds,
+                                                addedDisabledRemIds,
                                                 "->" + await getRemText(plugin, rem))); // { ...searchOptions, invertedDirection: false }
     }
 
@@ -884,343 +883,13 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                 searchOptions,
                                                 processed,
                                                 addedCardIds,
+                                                addedDisabledRemIds,
                                                 "->" + await getRemText(plugin, rem)));
     }
   }
 
   return cards;
 }
-
-/*
-async function getCardsOfRem( plugin: RNPlugin,
-                              rem: Rem,
-                              searchOptions: SearchOptions,
-                              processed = new Set<string>(),
-                              addedCardIds = new Set<string>(),
-                              cardPath: string = ""): Promise<Card[]> {
-  if (processed.has(rem._id)) return [];
-  processed.add(rem._id);
-
-  //console.log("GetCardsOfRem: " + await getRemText(plugin, rem));
-
-  let cards: Card[] = [];
-
-  let childrenRem = await getCleanChildren(plugin, rem);
-
-  const flashcard = await isFlashcard(plugin, rem);
-  // FLASHCARD: Add cards from this rem, filtered by due if specified
-  if(flashcard) {
-    await addCards(plugin, rem, cards, searchOptions, addedCardIds, cardPath);
-  }
-  
-
-  // FLASHCARD: Handle References that appear in this QUESTION
-  if(flashcard) {
-    const questionRefs = await rem.remsBeingReferenced();
-
-    // 
-    if(searchOptions.includeReferencedRem) {
-      for(const r of questionRefs) {
-        cards = cards.concat(await getCardsOfRem( plugin,
-                                                  r,
-                                                  { ...searchOptions,
-                                                    includeAncestors: false,
-                                                    includeDescendants: true,
-                                                    referencedOnly: false,
-                                                    includeReferencedCard: false,
-                                                    includeReferencedRem: false,
-                                                    includeReferencingCard: false,
-                                                    includeReferencingRem: false},
-                                                  processed,
-                                                  addedCardIds,
-                                                  "->" + await getRemText(plugin, rem)));
-      }
-    }
-
-    // If includeReferencedRem == true these should already be included?
-    if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
-
-      for(const ref of questionRefs) {
-        await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath);
-      }
-    }
-  }
-
-  // FLASHCARD: Handle References that appear in ANSWERS
-  if(flashcard) {
-    for(const c of childrenRem) {
-      const answerRefs = await c.remsBeingReferenced()
-      
-      // 
-      if(searchOptions.includeReferencedRem) {
-        for(const r of answerRefs) {
-          cards = cards.concat(await getCardsOfRem( plugin,
-                                                    r,
-                                                    { ...searchOptions,
-                                                      includeAncestors: false,
-                                                      includeDescendants: true,
-                                                      referencedOnly: false,
-                                                      includeReferencedCard: false,
-                                                      includeReferencedRem: false,
-                                                      includeReferencingCard: false,
-                                                      includeReferencingRem: false},
-                                                    processed,
-                                                    addedCardIds,
-                                                    "->" + await getRemText(plugin, rem)));
-        }
-      }
-
-      // If includeReferencedRem == true these should already be included?
-      if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
-
-        for(const ref of answerRefs) {
-          await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath);
-        }
-      }
-    }
-  }
-
-  // REM: This Rem is referenced in a FLASHCARD (e.g., questions where this rem appears as an answer)
-  if(searchOptions.includeReferencingCard) {
-    const childrenRef = await rem.remsReferencingThis();
-    for (const ref of childrenRef) {
-      // ANSWER: Reference appears in ANSWER
-      if (await ref.isCardItem() || await ref.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) {
-        const question = await ref.getParentRem();
-        if (question) {
-          await addCards(plugin, question, cards, searchOptions, addedCardIds, cardPath);
-        }
-      }
-
-      // QUESTION:
-      if(await isFlashcard(plugin, ref)) {
-        await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath);
-      }
-    }
-  }
-
-  // HIERARCHY: Handle portals if includePortals is true
-  if (searchOptions.includePortals) {
-    //const childrenRem = await getCleanChildren(plugin, rem);
-
-    for (const child of childrenRem) {
-      if (await child.getType() === RemType.PORTAL) {
-          const rems = await child.getPortalDirectlyIncludedRem();
-
-          //console.log("In Portal:");
-          for(const r of rems) {
-            //console.log(await getRemText(plugin, r))
-            // Using r instead of await plugin.rem.findOne(r._id) throws a runtime error
-            cards = cards.concat(await getCardsOfRem( plugin,
-                                                      await plugin.rem.findOne(r._id) as Rem,
-                                                      searchOptions,
-                                                      processed,
-                                                      addedCardIds,
-                                                      "->" + await getRemText(plugin, rem))); // { ...searchOptions, invertedDirection: false }
-          }
-      }
-    }
-  }
-
-  // HIERARCHY: Add option to include this.
-  if (searchOptions.includeAncestors) {
-
-    // Special Case
-    if(flashcard) {
-      const ancestorCards = await getCardsOfRem(plugin,
-                                                await rem.getParentRem() as Rem,
-                                                {...searchOptions, includeDescendants: false},
-                                                processed,
-                                                addedCardIds,
-                                                "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
-      cards = cards.concat(ancestorCards);
-    }
-    const lineages = await getAncestorLineage(plugin, rem);
-
-    for (const lineage of lineages) {
-      for (const ancestor of lineage) {
-        //console.log("Go to Ancestor: " + await getRemText(plugin, ancestor));
-        const ancestorCards = await getCardsOfRem(plugin,
-                                                  ancestor,
-                                                  { ...searchOptions, includeAncestors: false, includeDescendants: false },
-                                                  processed,
-                                                  addedCardIds,
-                                                  "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
-        cards = cards.concat(ancestorCards);
-      }
-    }
-  }
-
-  // HIERARCHY: Recurse into descendants and referencing rems
-  if(searchOptions.includeDescendants) { // if(!searchOptions.invertedDirection) {
-    //let childrenRef = await rem.remsReferencingThis();
-
-    for(const child of childrenRem) {
-      // Properties
-      const cName = await getRemText(plugin, child);
-      if(cName == "Properties" || cName == "Eigenschaften") { // searchOptions.invertedDirection && 
-        cards = cards.concat(await getCardsOfRem( plugin,
-                                                  child,
-                                                  {...searchOptions, includeAncestors: false, includeDescendants: true},
-                                                  processed,
-                                                  addedCardIds,
-                                                  "->" + await getRemText(plugin, rem))); // { ...searchOptions, invertedDirection: false }
-      }
-
-      // Recursion
-      // DISABLED support
-      if(!await hasTag(plugin, child, "DISABLED")) {
-        cards = cards.concat(await getCardsOfRem( plugin,
-                                                  child,
-                                                  searchOptions,
-                                                  processed,
-                                                  addedCardIds,
-                                                  "->" + await getRemText(plugin, rem)));
-      }
-    }
-
-    let childrenRef = await rem.remsReferencingThis();
-
-    for(const c of childrenRef) {
-      // All Descendants or only Descendants that are not Flashcards?
-      if(searchOptions.includeReferencingCard || (!searchOptions.includeReferencingCard && !await isFlashcard(plugin, c))) {
-        cards = cards.concat(await getCardsOfRem( plugin,
-                                                  c,
-                                                  {...searchOptions, includeAncestors: false, includeDescendants: true},
-                                                  processed,
-                                                  addedCardIds,
-                                                  "->" + await getRemText(plugin, rem)));
-      }
-    }
-  }
-
-  return cards;
-}
-*/
-
-/*
-
-interface DisabledRemInfo {
-  id: string;
-  text: string;
-  nextDate: number;
-}
-
-async function getDisabledRem(
-  plugin: RNPlugin,
-  rem: Rem,
-  searchOptions: SearchOptions,
-  processed = new Set<string>(),
-  addedRemIds = new Set<string>()
-): Promise<DisabledRemInfo[]> {
-  // Prevent infinite loops by skipping processed rems
-  if (processed.has(rem._id)) return [];
-  processed.add(rem._id);
-
-  let disabledRems: DisabledRemInfo[] = [];
-
-  // Handle upward direction if bothDirections is true
-  if (searchOptions.invertedDirection) {
-    const lineages = await getAncestorLineage(plugin, rem);
-    for (const lineage of lineages) {
-      for (const ancestor of lineage) {
-        const ancestorDisabledRems = await getDisabledRem(
-          plugin,
-          ancestor,
-          { ...searchOptions, invertedDirection: false }, // Avoid infinite upward recursion
-          processed,
-          addedRemIds
-        );
-        disabledRems = disabledRems.concat(ancestorDisabledRems);
-      }
-    }
-  }
-
-  // Check if the current rem is a disabled flashcard
-  if (!(await rem.getEnablePractice()) && (await isFlashcard(plugin, rem))) {
-    if (!addedRemIds.has(rem._id)) {
-      addedRemIds.add(rem._id);
-      const text = await getRemText(plugin, rem);
-      disabledRems.push({ id: rem._id, text, nextDate: 0 });
-    }
-  }
-
-  // Handle portals if includePortals is true
-  if (searchOptions.includePortals) {
-    const childrenRem = await getCleanChildren(plugin, rem);
-    for (const child of childrenRem) {
-      if (await child.getType() === RemType.PORTAL) {
-        const portalRems = await child.getPortalDirectlyIncludedRem();
-        for (const pRem of portalRems) {
-          const portalDisabledRems = await getDisabledRem(
-            plugin,
-            await plugin.rem.findOne(pRem._id) as Rem,
-            { ...searchOptions, invertedDirection: false }, // Limit direction in portals
-            processed,
-            addedRemIds
-          );
-          disabledRems = disabledRems.concat(portalDisabledRems);
-        }
-      }
-    }
-  }
-
-  // Get all children and referencing rems for further processing
-  const childrenRem = await getCleanChildrenAll(plugin, rem);
-
-  // Handle references in descendants (e.g., disabled flashcards referenced in answers)
-  for (const child of childrenRem) {
-    const refs = await child.remsBeingReferenced();
-    if (
-      refs.length > 0 &&
-      (await child.isCardItem() || await child.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))
-    ) {
-      const ref = refs[0];
-      if (!(await ref.getEnablePractice()) && (await isFlashcard(plugin, ref))) {
-        if (!addedRemIds.has(ref._id)) {
-          addedRemIds.add(ref._id);
-          const text = await getRemText(plugin, ref);
-          disabledRems.push({ id: ref._id, text, nextDate: 0 });
-        }
-      }
-    }
-  }
-
-  // Handle rems referencing this rem (e.g., questions where this rem is an answer)
-  const childrenRef = await rem.remsReferencingThis();
-  for (const ref of childrenRef) {
-    if (
-      await ref.isCardItem() || 
-      await ref.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)
-    ) {
-      const question = await ref.getParentRem();
-      if (question && !(await question.getEnablePractice())) {
-        if (!addedRemIds.has(question._id)) {
-          addedRemIds.add(question._id);
-          const text = await getRemText(plugin, question);
-          disabledRems.push({ id: question._id, text, nextDate: 0 });
-        }
-      }
-    }
-  }
-
-  // Recurse into descendants and referencing rems
-  const children = [...childrenRem, ...childrenRef];
-  for (const child of children) {
-    const childDisabledRems = await getDisabledRem(
-      plugin,
-      child,
-      searchOptions,
-      processed,
-      addedRemIds
-    );
-    disabledRems = disabledRems.concat(childDisabledRems);
-  }
-
-  return disabledRems;
-}
-
-*/
 
 async function loadCards(plugin: RNPlugin, rem: Rem | undefined, cardIds: string[]): Promise<Card[]> {
     if(!rem)
@@ -1232,39 +901,6 @@ async function loadCards(plugin: RNPlugin, rem: Rem | undefined, cardIds: string
     //const filteredCards = allCards.filter(card => cardIdSet.has(card._id));
     //return filteredCards;
     return plugin.card.findMany(cardIds);
-}
-
-function getLastRatingStr_(history: RepetitionStatus[] | undefined): string {
-  // Handle undefined or empty array
-  if (!history || history.length === 0) {
-      return "";
-  }
-
-  // Iterate from the last element to the first
-  for (let i = history.length - 1; i >= 0; i--) {
-      const score = history[i].score;
-      // Skip TOO_EARLY and VIEWED_AS_LEECH
-      if (score !== QueueInteractionScore.TOO_EARLY && score !== QueueInteractionScore.VIEWED_AS_LEECH) {
-          switch (score) {
-              case QueueInteractionScore.AGAIN:
-                  return "Forgot";
-              case QueueInteractionScore.HARD:
-                  return "Partially recalled";
-              case QueueInteractionScore.GOOD:
-                  return "Recalled with effort";
-              case QueueInteractionScore.EASY:
-                  return "Easily recalled";
-              case QueueInteractionScore.RESET:
-                  return "Reset";
-              default:
-                  // Handle unexpected scores (though unlikely with enum)
-                  return "";
-          }
-      }
-  }
-
-  // Return empty string if all scores are TOO_EARLY or VIEWED_AS_LEECH
-  return "";
 }
 
 function getLastRatingStr(history: RepetitionStatus[] | undefined, count: number = 1): string[] {
@@ -1325,27 +961,37 @@ export function getLastInterval(history: RepetitionStatus[] | undefined): {worki
   return undefined;
 }
 
-async function questionsFromCards_(plugin: RNPlugin, cards: Card[]): Promise<string[]> {
-  let questions: string[] = [];
-
-  for(const c of cards) {
-    questions.push(await getRemText(plugin, await c.getRem()));
-  }
-
-  return questions;
-}
-
 // Updated to return an array of { id, text, nextDate, interval, lastRating } objects
-async function questionsFromCards(plugin: RNPlugin, cards: Card[]): Promise<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[]> {
-    const questions: { id: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[] = [];
-    for (const c of cards) {
-        const rem = await c.getRem();
-        const text = rem ? await getRemText(plugin, rem) : '';
-
-        const lastInterval = getLastInterval(c.repetitionHistory);
-        const lastRatings = getLastRatingStr(c.repetitionHistory, 3);
-        const interval = lastInterval ? formatMilliseconds(lastInterval.workingInterval) : '';
-        questions.push({ id: rem ? rem._id : c._id, text, nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0, interval, lastRatings });
+// Now works with SearchData[] to support both enabled and disabled flashcards
+async function questionsFromSearchData(plugin: RNPlugin, searchData: SearchData[]): Promise<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[], isDisabled: boolean }[]> {
+    const questions: { id: string, text: string, nextDate: number, interval: string, lastRatings: string[], isDisabled: boolean }[] = [];
+    for (const sd of searchData) {
+        const text = await getRemText(plugin, sd.rem);
+        
+        if (sd.card) {
+            // Enabled flashcard with card
+            const lastInterval = getLastInterval(sd.card.repetitionHistory);
+            const lastRatings = getLastRatingStr(sd.card.repetitionHistory, 3);
+            const interval = lastInterval ? formatMilliseconds(lastInterval.workingInterval) : '';
+            questions.push({ 
+                id: sd.rem._id, 
+                text, 
+                nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0, 
+                interval, 
+                lastRatings,
+                isDisabled: false
+            });
+        } else {
+            // Disabled flashcard (no card)
+            questions.push({ 
+                id: sd.rem._id, 
+                text, 
+                nextDate: 0, 
+                interval: 'Disabled', 
+                lastRatings: [],
+                isDisabled: true
+            });
+        }
     }
     return questions;
 }
@@ -1357,7 +1003,7 @@ function CustomQueueWidget() {
 
     const [loading, setLoading] = useState<boolean>(false);
     const [cardIds, setCardIds] = useState<string[]>([]);
-    const [cards, setCards] = useState<Card[]>([]);
+    const [searchDataList, setSearchDataList] = useState<SearchData[]>([]);
     const [currentCardId, setCurrentCardId] = useState<string | undefined>(undefined);
     const [currentCardText, setCurrentCardText] = useState<string>("");
     const [currentCardLastInterval, setCurrentCardLastInterval] = useState<string>("");
@@ -1368,8 +1014,8 @@ function CustomQueueWidget() {
     const [queueRemText, setQueueRemText] = useState<string>("");
     const [buildQueueRemText, setBuildQueueRemText] = useState<string>("");
     const [isListExpanded, setIsListExpanded] = useState<boolean>(false);
-    // Updated state type to array of objects
-    const [cardsData, setCardsData] = useState<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[]>([]);
+    // Updated state type to array of objects with isDisabled flag
+    const [cardsData, setCardsData] = useState<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[], isDisabled: boolean }[]>([]);
     const [sortColumn, setSortColumn] = useState<'text' | 'nextDate' | 'interval' | 'lastRating'>('nextDate');
     const [sortAscending, setSortAscending] = useState<boolean>(true);
 
@@ -1444,15 +1090,36 @@ function CustomQueueWidget() {
     useEffect(() => {
         const initFromStorage = async () => {
             const currentQueueRemId: string | undefined = await plugin.storage.getSynced("currentQueueRemId");
-            const currentQueueCardIds: string[] = (await plugin.storage.getSynced("currentQueueCardIds")) || [];
-            if (currentQueueRemId && currentQueueCardIds.length > 0) {
+            // Load stored search data (array of {remId, cardId} pairs)
+            const storedSearchData: { remId: string, cardId: string | null }[] = (await plugin.storage.getSynced("currentQueueSearchData")) || [];
+            
+            if (currentQueueRemId && storedSearchData.length > 0) {
                 const rem = await plugin.rem.findOne(currentQueueRemId);
                 if (rem) {
                     setCurrentQueueRem(rem);
-                    setCardIds(currentQueueCardIds);
-                    const loadedCards = await loadCards(plugin, rem, currentQueueCardIds);
-                    setCards(loadedCards);
-                    setCardsData(await questionsFromCards(plugin, loadedCards));
+                    
+                    // Reconstruct SearchData from stored IDs
+                    const loadedSearchData: SearchData[] = [];
+                    const enabledCardIds: string[] = [];
+                    
+                    for (const stored of storedSearchData) {
+                        const storedRem = await plugin.rem.findOne(stored.remId);
+                        if (storedRem) {
+                            if (stored.cardId) {
+                                const card = await plugin.card.findOne(stored.cardId);
+                                if (card) {
+                                    loadedSearchData.push({ rem: storedRem, card });
+                                    enabledCardIds.push(stored.cardId);
+                                }
+                            } else {
+                                loadedSearchData.push({ rem: storedRem, card: null });
+                            }
+                        }
+                    }
+                    
+                    setSearchDataList(loadedSearchData);
+                    setCardIds(enabledCardIds);
+                    setCardsData(await questionsFromSearchData(plugin, loadedSearchData));
                     updateCardInfo();
                 }
             }
@@ -1512,7 +1179,7 @@ function CustomQueueWidget() {
       console.log(searchOptions);
 
       setCardIds([]);
-      setCards([]);
+      setSearchDataList([]);
       setCardsData([]);
       //setFocusedRem(undefined);
       setIsTableExpanded(false);
@@ -1548,21 +1215,26 @@ function CustomQueueWidget() {
                                                                                     includeReferencedRem: false,
                                                                                     includeReferencingRem: false});
                 
-                // Create a Set of _ids from B for efficient lookup
-                const bIds = new Set(nonRefCards.map(card => card.card._id));
+                // Create a Set of _ids from B for efficient lookup (filter out null cards)
+                const bIds = new Set(nonRefCards.filter(card => card.card !== null).map(card => card.card!._id));
 
                 // Iterate backward through A to safely remove elements
                 for (let i = fetchedCards.length - 1; i >= 0; i--) {
-                  if (bIds.has(fetchedCards[i].card._id)) {
+                  if (fetchedCards[i].card && bIds.has(fetchedCards[i].card!._id)) {
                     fetchedCards.splice(i, 1); // Remove the card at index i if its _id is in B
                   }
                 }
               }
 
-              // RATINGONLY
+              // RATINGONLY (skip disabled flashcards with null cards)
               if(searchOptions.ratingOnly) {
                 for(let i = fetchedCards.length-1; i >= 0; i--) {
-                  const rep = fetchedCards[i].card.repetitionHistory;
+                  const card = fetchedCards[i].card;
+                  if (!card) {
+                    // Disabled flashcard has no card, skip rating filter
+                    continue;
+                  }
+                  const rep = card.repetitionHistory;
 
                   if(!(rep && rep[rep.length-1] && rep[rep.length-1].score == searchOptions.ratingFilter)) {
                     fetchedCards.splice(i, 1);
@@ -1572,8 +1244,8 @@ function CustomQueueWidget() {
 
               // DISABLEDONLY: 
               for (let i = fetchedCards.length - 1; i >= 0; i--) {
-                //console.log(i + " " + await getRemText(plugin, fetchedCards[i].rem) + " isDisabled: " + await isDisabled(plugin, fetchedCards[i]));
-                if(!(await isDisabled(plugin, fetchedCards[i]) == searchOptions.disabledOnly)) {
+                //console.log(i + " " + await getRemText(plugin, fetchedCards[i].rem) + " isDisabled: " + await isDisabled(plugin, fetchedCards[i].rem));
+                if(!(await isDisabled(plugin, fetchedCards[i].rem) == searchOptions.disabledOnly)) {
                   fetchedCards.splice(i, 1);
                 } 
               }
@@ -1582,13 +1254,23 @@ function CustomQueueWidget() {
               fetchedCards = shuffle<SearchData>(fetchedCards);
               fetchedCards = searchOptions.maximumNumberOfCards != 0 ? fetchedCards.slice(0, searchOptions.maximumNumberOfCards) : fetchedCards;
               
-              //
-              const ids = fetchedCards.map((c) => c.card._id);
+              // Store the full searchDataList
+              setSearchDataList(fetchedCards);
+              
+              // Extract card IDs for enabled cards only (for Queue component)
+              const enabledCards = fetchedCards.filter(c => c.card !== null);
+              const ids = enabledCards.map((c) => c.card!._id);
               setCardIds(ids);
-              const cards = fetchedCards.map((c) => c.card);
-              setCards(cards);
-              setCardsData(await questionsFromCards(plugin, cards));
-              await plugin.storage.setSynced("currentQueueCardIds", ids);
+              
+              // Generate display data from all search data (including disabled)
+              setCardsData(await questionsFromSearchData(plugin, fetchedCards));
+              
+              // Save to storage as serializable format
+              const storableSearchData = fetchedCards.map(sd => ({
+                  remId: sd.rem._id,
+                  cardId: sd.card ? sd.card._id : null
+              }));
+              await plugin.storage.setSynced("currentQueueSearchData", storableSearchData);
               await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
               setLoading(false);
               setCurrentQueueRem(currentFocusedRem);
@@ -1705,10 +1387,9 @@ function CustomQueueWidget() {
     };
 
     const openCurrentFlashcard = async () => {
-        const currentCard = cards.find((card) => card._id === currentCardId);
-        const rem = await currentCard?.getRem();
-        if (rem) {
-            await plugin.window.openRem(rem);
+        const currentSearchData = searchDataList.find((sd) => sd.card?._id === currentCardId);
+        if (currentSearchData) {
+            await plugin.window.openRem(currentSearchData.rem);
         }
     };
 

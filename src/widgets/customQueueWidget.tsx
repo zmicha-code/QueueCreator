@@ -1079,15 +1079,20 @@ function getLastInterval(history: RepetitionStatus[] | undefined): {workingInter
 
 // Updated to return an array of { id, text, nextDate, interval, lastRating } objects
 // Now works with SearchData[] to support both enabled and disabled flashcards
+// Re-fetches cards from database to get fresh repetitionHistory
 async function questionsFromSearchData(plugin: RNPlugin, searchData: SearchData[]): Promise<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[], isDisabled: boolean }[]> {
     const questions: { id: string, text: string, nextDate: number, interval: string, lastRatings: string[], isDisabled: boolean }[] = [];
     for (const sd of searchData) {
         const text = await getRemText(plugin, sd.rem);
         
         if (sd.card) {
+            // Re-fetch card from database to get updated repetitionHistory
+            const freshCard = await plugin.card.findOne(sd.card._id);
+            const cardToUse = freshCard || sd.card;
+            
             // Enabled flashcard with card
-            const lastInterval = getLastInterval(sd.card.repetitionHistory);
-            const lastRatings = getLastRatingStr(sd.card.repetitionHistory, 3);
+            const lastInterval = getLastInterval(cardToUse.repetitionHistory);
+            const lastRatings = getLastRatingStr(cardToUse.repetitionHistory, 3);
             const interval = lastInterval ? formatMilliseconds(lastInterval.workingInterval) : '';
             questions.push({ 
                 id: sd.rem._id, 
@@ -1120,6 +1125,7 @@ function CustomQueueWidget() {
     const [loading, setLoading] = useState<boolean>(false);
     const [cardIds, setCardIds] = useState<string[]>([]);
     const [searchDataList, setSearchDataList] = useState<SearchData[]>([]);
+    const [currentQueueIndex, setCurrentQueueIndex] = useState<number>(0);
     const [currentCardId, setCurrentCardId] = useState<string | undefined>(undefined);
     const [currentCardText, setCurrentCardText] = useState<string>("");
     const [currentCardLastInterval, setCurrentCardLastInterval] = useState<string>("");
@@ -1132,6 +1138,7 @@ function CustomQueueWidget() {
     const [isListExpanded, setIsListExpanded] = useState<boolean>(false);
     // Updated state type to array of objects with isDisabled flag
     const [cardsData, setCardsData] = useState<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[], isDisabled: boolean }[]>([]);
+    const [isDisabledTableExpanded, setIsDisabledTableExpanded] = useState<boolean>(true);
     const [sortColumn, setSortColumn] = useState<'text' | 'nextDate' | 'interval' | 'lastRating'>('nextDate');
     const [sortAscending, setSortAscending] = useState<boolean>(true);
 
@@ -1198,6 +1205,7 @@ function CustomQueueWidget() {
                                                                         useStructuralChildrenOnly: false});
 
     const [isQueueExpanded, setIsQueueExpanded] = useState<boolean>(true);
+    const [activeTab, setActiveTab] = useState<'build' | 'queue'>('build');
 
     const buildQueueRem = useTracker(async (reactPlugin) => {
             return await reactPlugin.focus.getFocusedRem();
@@ -1210,6 +1218,8 @@ function CustomQueueWidget() {
             const currentQueueRemId: string | undefined = await plugin.storage.getSynced("currentQueueRemId");
             // Load stored search data (array of {remId, cardId} pairs)
             const storedSearchData: { remId: string, cardId: string | null }[] = (await plugin.storage.getSynced("currentQueueSearchData")) || [];
+            // Load stored queue index
+            const storedIndex: number = (await plugin.storage.getSynced("currentQueueIndex")) || 0;
             
             if (currentQueueRemId && storedSearchData.length > 0) {
                 const rem = await plugin.rem.findOne(currentQueueRemId);
@@ -1238,6 +1248,9 @@ function CustomQueueWidget() {
                     setSearchDataList(loadedSearchData);
                     setCardIds(enabledCardIds);
                     setCardsData(await questionsFromSearchData(plugin, loadedSearchData));
+                    // Restore stored index (clamped to valid range)
+                    const validIndex = Math.min(Math.max(0, storedIndex), Math.max(0, loadedSearchData.length - 1));
+                    setCurrentQueueIndex(validIndex);
                     updateCardInfo();
                 }
             }
@@ -1390,6 +1403,9 @@ function CustomQueueWidget() {
               }));
               await plugin.storage.setSynced("currentQueueSearchData", storableSearchData);
               await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
+              // Reset queue index to 0 when building a new queue
+              await plugin.storage.setSynced("currentQueueIndex", 0);
+              setCurrentQueueIndex(0);
               setLoading(false);
               setCurrentQueueRem(currentFocusedRem);
               setIsTableExpanded(false);
@@ -1416,6 +1432,35 @@ function CustomQueueWidget() {
     async function onMouseClick() {
         updateCardInfo();
     }
+
+    // Handle queue order changes (e.g., when a card is skipped)
+    const handleQueueOrderChange = async (newOrder: SearchData[]) => {
+        // Update local state
+        setSearchDataList(newOrder);
+        
+        // Update storage so the new order persists across tab switches
+        const storableSearchData = newOrder.map(sd => ({
+            remId: sd.rem._id,
+            cardId: sd.card ? sd.card._id : null
+        }));
+        await plugin.storage.setSynced("currentQueueSearchData", storableSearchData);
+        
+        // Also update cardsData for table display
+        setCardsData(await questionsFromSearchData(plugin, newOrder));
+    };
+
+    // Handle queue index changes (e.g., when a card is answered)
+    const handleCurrentIndexChange = async (newIndex: number) => {
+        setCurrentQueueIndex(newIndex);
+        await plugin.storage.setSynced("currentQueueIndex", newIndex);
+    };
+
+    // Handle card rated - refresh display data for the table
+    const handleCardRated = async () => {
+        if (searchDataList.length > 0) {
+            setCardsData(await questionsFromSearchData(plugin, searchDataList));
+        }
+    };
 
     const openCurrentQueueRem = async () => {
         if (currentQueueRem) {
@@ -1546,211 +1591,243 @@ function CustomQueueWidget() {
 
     return (
       <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10, overflowY: "auto" }} >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, }}>
-          <div style={{ width: "100%", maxHeight: "600px", padding: "10px", border: "1px solid #ddd", marginRight: "20px" }}>
-            <button style={{ width: "100%" }} onClick={toogleBuildQueue}>{isBuildQueueExpanded ? "- Build Queue" : "+ Build Queue"}</button>
-            {isBuildQueueExpanded && (
-              <div style={{ marginTop: "10px" }}>
-                <div>Rem: {buildQueueRemText}</div>
-                
-                {/* Hierarchy and Flashcard Filter side by side */}
-                <div style={{ display: "flex", gap: "20px" }}>
-                  {/* Hierarchy group */}
-                  <div style={{ flex: 1 }}>
-                    <h3>Hierarchy</h3>
-                    <label style={{ display: "block" }} title='Include flashcards from the selected Rem itself.'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.includeThisRem} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, includeThisRem: !searchOptions.includeThisRem })} 
-                      /> 
-                      This Rem
-                    </label>
-                    <label style={{ display: "block" }} title='Include flashcards from ancestor Rems (and their first-level children, Properties/Eigenschaften, and documents).'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.includeAncestors} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors })} 
-                      /> 
-                      Ancestors
-                    </label>
-                    <label style={{ display: "block" }} title='Include flashcards from all descendant Rems.'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.includeDescendants} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, includeDescendants: !searchOptions.includeDescendants })} 
-                      /> 
-                      Descendants
-                    </label>
-                    <label style={{ display: "block" }} title='Include Flashcards from inside Portals.'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.includePortals} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, includePortals: !searchOptions.includePortals })} 
-                      /> 
-                      Include Portals
-                    </label>
-                  </div>
-                  
-                  {/* Card Properties group */}
-                  <div style={{ flex: 1 }}>
-                    <h3>Flashcard Filter</h3>
-                    <label style={{ display: "block" }} title='Only add Flashcards that are Due.'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.dueOnly} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, dueOnly: !searchOptions.dueOnly })} 
-                      /> 
-                      Due
-                    </label>
-                    <label style={{ display: "block" }} title='Only add Flashcards that are Disabled.'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.disabledOnly} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, disabledOnly: !searchOptions.disabledOnly })} 
-                      /> 
-                      Disabled
-                    </label>
-                    <label style={{ display: "block" }} title='Only add Flashcards that are a Reference.'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.referencedOnly} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, referencedOnly: !searchOptions.referencedOnly })} 
-                      /> 
-                      Referenced
-                    </label>
-                    <label style={{ display: "block" }} title='Only add Flashcards that were rated a particular way the last time'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.ratingOnly} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, ratingOnly: !searchOptions.ratingOnly })} 
-                      /> 
-                        <input type="radio" name="Rating" id="Rating_0" value="Rating_0" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.TOO_EARLY})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Skip")} />
-                        <input type="radio" name="Rating" id="Rating_1" value="Rating_1" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.AGAIN})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Forgot")} />
-                        <input type="radio" name="Rating" id="Rating_2" value="Rating_2" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.HARD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Partially recalled")} />
-                        <input type="radio" name="Rating" id="Rating_3" value="Rating_3" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.GOOD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Recalled with effort")} />
-                        <input type="radio" name="Rating" id="Rating_4" value="Rating_4" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.EASY})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Easily recalled")} />
-                    </label>
-                  </div>
-                </div>
-                
-                {/* Include Flashcards and Include Rems side by side */}
-                <div style={{ display: "flex", gap: "20px" }}>
-                  {/* Flashcards Referenced and Referencing group */}
-                  <div style={{ flex: 1 }}>
-                    <h3>Include Flashcards</h3>
-                    <label style={{ display: "block" }} title='Include Flashcards that are mentioned in Q/A'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.includeReferencedCard} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedCard: !searchOptions.includeReferencedCard })} 
-                      /> 
-                       Flashcards referenced in Q or A.
-                    </label>
-                    <label style={{ display: "block" }} title='Include Flashcards that mention a Rem of the Queue.'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.includeReferencingCard} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencingCard: !searchOptions.includeReferencingCard })} 
-                      /> 
-                       Other Flashcards that reference Rem in Q or A
-                    </label>
-                    
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <h3>Include Rems</h3>
-                    <label style={{ display: "block" }} title='Include Flashcards from Rems that are mentioned in Q/A'>
-                      <input 
-                        type="checkbox" 
-                        checked={searchOptions?.includeReferencedRem} 
-                        onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedRem: !searchOptions.includeReferencedRem })} 
-                      /> 
-                       Rems referenced in Q or A.
-                    </label>
-                  </div>
-                </div>
-                <div>
-                <label>
-                  Maximum Cards <input type='text' style={{ width: '30px' }} maxLength={4} value={searchOptions?.maximumNumberOfCards ?? ''} onChange={(e) => setSearchOptions({...searchOptions, maximumNumberOfCards: Number(e.target.value)})} /> 
-                </label>
-                </div>
-                <div style={{ width: '100%', marginTop: '10px' }}>
-                <MyRemNoteButton 
-                  text="Build Queue" 
-                  onClick={async () => {await loadRemQueue()}} 
-                  img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" 
-                  style={{ width: '100%', justifyContent: 'center' }}
-                />
-                </div>
-              </div>
-            )}
-          </div>
+        {/* Tab Header */}
+        <div style={{ display: "flex", borderBottom: "2px solid #ddd", marginBottom: 10 }}>
+          <button
+            onClick={() => setActiveTab('build')}
+            style={{
+              padding: "10px 20px",
+              border: "none",
+              backgroundColor: activeTab === 'build' ? "#2b2c2c" : "transparent",
+              cursor: "pointer",
+              fontWeight: activeTab === 'build' ? "bold" : "normal",
+              marginRight: 5,
+              borderRadius: "4px 4px 0 0"
+            }}
+          >
+            Build Queue
+          </button>
+          {cardsData.length > 0 && (
+            <button
+              onClick={() => setActiveTab('queue')}
+              style={{
+                padding: "10px 20px",
+                border: "none",
+                backgroundColor: activeTab === 'queue' ? "#2b2c2c" : "transparent",
+                cursor: "pointer",
+                fontWeight: activeTab === 'queue' ? "bold" : "normal",
+                borderRadius: "4px 4px 0 0"
+              }}
+            >
+              Queue ({cardsData.length})
+            </button>
+          )}
         </div>
-        {loading ? (
-          <div>Loading flashcards...</div>
-        ) : cardsData.length > 0 ? (
-          <div style={{ height: "100%"}}>
-          <div style={{ display: "flex", flexDirection: "column", }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, }}>
-              <div style={{ width: "100%", maxHeight: "600px", overflowY: "scroll", padding: "10px", border: "1px solid #ddd", marginRight: "20px" }}>
-                <button style={{ width: "100%" }} onClick={toogleCardList}>{isListExpanded ? "- Current Queue" : "+ Current Queue"} ({cardsData.length})</button>
-                {isListExpanded && (
-                  <div style={{ marginTop: "10px" }}>
-                    <div style={{ display: "flex", gap: "10px", marginBottom: "10px" }}>
-                      <MyRemNoteButton text={queueRemText ? queueRemText : "No Rem selected"} onClick={openCurrentQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
-                      <MyRemNoteButton text="Export Queue" onClick={exportQueueToXml} img="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3" />
-                    </div>
-                    <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "10px", tableLayout: "fixed", fontSize: "12px" }}>
-                      <thead>
-                        <tr>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "60%" }}><MyRemNoteButtonSmall text={`Question ${sortColumn === 'text' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('text')} /></th>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "15%" }}><MyRemNoteButtonSmall text={`Next Date ${sortColumn === 'nextDate' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('nextDate')} /></th>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "15%" }}><MyRemNoteButtonSmall text={`Interval ${sortColumn === 'interval' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('interval')} /></th>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "10%" }}><MyRemNoteButtonSmall text={`Last Rating ${sortColumn === 'lastRating' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('lastRating')} /></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {getSortedCardsData().map((c) => (
-                          <tr key={c.id}>
-                            <td style={{ border: "1px solid #ddd", padding: 8 }}><MyRemNoteButtonSmall text={c.text} onClick={async () => { openRem(plugin, c.id); }} /></td>
-                            <td style={{ border: "1px solid #ddd", padding: 8 }}>{formatMilliseconds(c.nextDate - Date.now())}</td>
-                            <td style={{ border: "1px solid #ddd", padding: 8 }}>{c.interval}</td>
-                            <td style={{ border: "1px solid #ddd", padding: 8, textAlign: "center" }}>
-                              {c.lastRatings.length > 0 && (
-                                c.lastRatings.slice().reverse().map((rating, index) => (
-                                  <img
-                                    key={index}
-                                    style={{ width: '16px', height: '16px', marginRight: index < c.lastRatings.length - 1 ? '3px' : '0' }}
-                                    src={scoreToImage.get(rating)}
-                                  />
-                                ))
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+
+        {/* Tab Content */}
+        {activeTab === 'build' && (
+          <div style={{ marginTop: "10px" }}>
+            <div>Rem: {buildQueueRemText}</div>
+            
+            {/* Hierarchy and Flashcard Filter side by side */}
+            <div style={{ display: "flex", gap: "20px" }}>
+              {/* Hierarchy group */}
+              <div style={{ flex: 1 }}>
+                <h3>Hierarchy</h3>
+                <label style={{ display: "block" }} title='Include flashcards from the selected Rem itself.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includeThisRem} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includeThisRem: !searchOptions.includeThisRem })} 
+                  /> 
+                  This Rem
+                </label>
+                <label style={{ display: "block" }} title='Include flashcards from ancestor Rems (and their first-level children, Properties/Eigenschaften, and documents).'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includeAncestors} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors })} 
+                  /> 
+                  Ancestors
+                </label>
+                <label style={{ display: "block" }} title='Include flashcards from all descendant Rems.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includeDescendants} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includeDescendants: !searchOptions.includeDescendants })} 
+                  /> 
+                  Descendants
+                </label>
+                <label style={{ display: "block" }} title='Include Flashcards from inside Portals.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includePortals} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includePortals: !searchOptions.includePortals })} 
+                  /> 
+                  Include Portals
+                </label>
+              </div>
+              
+              {/* Card Properties group */}
+              <div style={{ flex: 1 }}>
+                <h3>Flashcard Filter</h3>
+                <label style={{ display: "block" }} title='Only add Flashcards that are Due.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.dueOnly} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, dueOnly: !searchOptions.dueOnly })} 
+                  /> 
+                  Due
+                </label>
+                <label style={{ display: "block" }} title='Only add Flashcards that are Disabled.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.disabledOnly} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, disabledOnly: !searchOptions.disabledOnly })} 
+                  /> 
+                  Disabled
+                </label>
+                <label style={{ display: "block" }} title='Only add Flashcards that are a Reference.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.referencedOnly} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, referencedOnly: !searchOptions.referencedOnly })} 
+                  /> 
+                  Referenced
+                </label>
+                <label style={{ display: "block" }} title='Only add Flashcards that were rated a particular way the last time'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.ratingOnly} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, ratingOnly: !searchOptions.ratingOnly })} 
+                  /> 
+                    <input type="radio" name="Rating" id="Rating_0" value="Rating_0" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.TOO_EARLY})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Skip")} />
+                    <input type="radio" name="Rating" id="Rating_1" value="Rating_1" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.AGAIN})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Forgot")} />
+                    <input type="radio" name="Rating" id="Rating_2" value="Rating_2" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.HARD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Partially recalled")} />
+                    <input type="radio" name="Rating" id="Rating_3" value="Rating_3" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.GOOD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Recalled with effort")} />
+                    <input type="radio" name="Rating" id="Rating_4" value="Rating_4" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.EASY})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Easily recalled")} />
+                </label>
               </div>
             </div>
-            <div onClick={onMouseClick} style={{ height: "100%", maxHeight: "100%", overflowY: "auto", padding: "10px", border: "1px solid #ddd", marginRight: "20px", position: "relative" }}>
-                {/*<Queue
-                  cardIds={cardIds}
-                  width={"100%"}
-                  maxWidth={"100%"}
-                />*/}
-                <MyRemNoteQueue
-                  cards={searchDataList}
-                  width={"100%"}
-                  maxWidth={"100%"}
-                  onQueueComplete={() => console.log("Done!")}
-                />
+            
+            {/* Include Flashcards and Include Rems side by side */}
+            <div style={{ display: "flex", gap: "20px" }}>
+              {/* Flashcards Referenced and Referencing group */}
+              <div style={{ flex: 1 }}>
+                <h3>Include Flashcards</h3>
+                <label style={{ display: "block" }} title='Include Flashcards that are mentioned in Q/A'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includeReferencedCard} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedCard: !searchOptions.includeReferencedCard })} 
+                  /> 
+                    Flashcards referenced in Q or A.
+                </label>
+                <label style={{ display: "block" }} title='Include Flashcards that mention a Rem of the Queue.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includeReferencingCard} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencingCard: !searchOptions.includeReferencingCard })} 
+                  /> 
+                    Other Flashcards that reference Rem in Q or A
+                </label>
+                
+              </div>
+              <div style={{ flex: 1 }}>
+                <h3>Include Rems</h3>
+                <label style={{ display: "block" }} title='Include Flashcards from Rems that are mentioned in Q/A'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includeReferencedRem} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedRem: !searchOptions.includeReferencedRem })} 
+                  /> 
+                    Rems referenced in Q or A.
+                </label>
+              </div>
             </div>
-          </div> 
+            <div>
+            <label>
+              Maximum Cards <input type='text' style={{ width: '30px' }} maxLength={4} value={searchOptions?.maximumNumberOfCards ?? ''} onChange={(e) => setSearchOptions({...searchOptions, maximumNumberOfCards: Number(e.target.value)})} /> 
+            </label>
+            </div>
+            <div style={{ width: '100%', marginTop: '10px' }}>
+            <MyRemNoteButton 
+              text="Build Queue" 
+              onClick={async () => {await loadRemQueue(); setActiveTab('queue');}} 
+              img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" 
+              style={{ width: '100%', justifyContent: 'center' }}
+            />
+            </div>
           </div>
-        ) : (
-        <div>No cards to display. cardsData is empty: {JSON.stringify(cardsData)}</div>
+        )}
+
+        {activeTab === 'queue' && (
+          loading ? (
+            <div>Loading flashcards...</div>
+          ) : cardsData.length > 0 ? (
+            <div style={{ height: "100%", flex: 1 }}>
+              <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+                <div onClick={onMouseClick} style={{ height: "100%", maxHeight: "100%", overflowY: "auto", padding: "10px", position: "relative" }}>
+                    <MyRemNoteQueue
+                      cards={searchDataList}
+                      width={"100%"}
+                      maxWidth={"100%"}
+                      onQueueComplete={() => console.log("Done!")}
+                      onQueueOrderChange={handleQueueOrderChange}
+                      initialIndex={currentQueueIndex}
+                      onCurrentIndexChange={handleCurrentIndexChange}
+                      onCardRated={handleCardRated}
+                    />
+                    {/* Disabled cards table - show when all cards in the queue are disabled */}
+                    {cardsData.length > 0 && cardsData.every(c => c.isDisabled) && (
+                      <div style={{ marginTop: "20px" }}>
+                        <div 
+                          onClick={() => setIsDisabledTableExpanded(!isDisabledTableExpanded)} 
+                          style={{ cursor: "pointer", fontWeight: "bold", marginBottom: "10px", display: "flex", alignItems: "center", gap: "8px" }}
+                        >
+                          <span>{isDisabledTableExpanded ? '▼' : '►'}</span>
+                          <span>Disabled Cards ({cardsData.length})</span>
+                        </div>
+                        {isDisabledTableExpanded && (
+                          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "10px", tableLayout: "fixed", fontSize: "12px" }}>
+                            <thead>
+                              <tr>
+                                <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "5%" }}>
+                                  <MyRemNoteButtonSmall text="#" onClick={() => {}} />
+                                </th>
+                                <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "70%" }}>
+                                  <MyRemNoteButtonSmall text={`Question ${sortColumn === 'text' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('text')} />
+                                </th>
+                                <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "25%" }}>
+                                  <MyRemNoteButtonSmall text="Status" onClick={() => {}} />
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {getSortedCardsData().map((c, index) => (
+                                <tr key={c.id}>
+                                  <td style={{ border: "1px solid #ddd", padding: 8, textAlign: "center" }}>
+                                    {index + 1}
+                                  </td>
+                                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                                    <MyRemNoteButtonSmall text={c.text} onClick={async () => { openRem(plugin, c.id); }} />
+                                  </td>
+                                  <td style={{ border: "1px solid #ddd", padding: 8, textAlign: "center", color: "#888" }}>
+                                    Disabled
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
+                </div>
+              </div> 
+            </div>
+          ) : (
+            <div style={{ padding: "20px", textAlign: "center" }}>No cards in queue. Go to "Build Queue" tab to create a queue.</div>
+          )
         )}
       </div>
 );

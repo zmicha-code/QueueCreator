@@ -1639,7 +1639,8 @@ function CustomQueueWidget() {
                     type="checkbox" 
                     checked={searchOptions?.includeThisRem} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeThisRem: !searchOptions.includeThisRem })} 
-                  /> 
+                    style={{ marginRight: '5px' }}
+                  />
                   This Rem
                 </label>
                 <label style={{ display: "block" }} title='Include flashcards from ancestor Rems (and their first-level children, Properties/Eigenschaften, and documents).'>
@@ -1647,7 +1648,8 @@ function CustomQueueWidget() {
                     type="checkbox" 
                     checked={searchOptions?.includeAncestors} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors })} 
-                  /> 
+                    style={{ marginRight: '5px' }}
+                  />
                   Ancestors
                 </label>
                 <label style={{ display: "block" }} title='Include flashcards from all descendant Rems.'>
@@ -1655,7 +1657,8 @@ function CustomQueueWidget() {
                     type="checkbox" 
                     checked={searchOptions?.includeDescendants} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeDescendants: !searchOptions.includeDescendants })} 
-                  /> 
+                    style={{ marginRight: '5px' }}
+                  />
                   Descendants
                 </label>
                 <label style={{ display: "block" }} title='Include Flashcards from inside Portals.'>
@@ -1663,7 +1666,8 @@ function CustomQueueWidget() {
                     type="checkbox" 
                     checked={searchOptions?.includePortals} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, includePortals: !searchOptions.includePortals })} 
-                  /> 
+                    style={{ marginRight: '5px' }}
+                  />
                   Include Portals
                 </label>
               </div>
@@ -1676,7 +1680,8 @@ function CustomQueueWidget() {
                     type="checkbox" 
                     checked={searchOptions?.dueOnly} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, dueOnly: !searchOptions.dueOnly })} 
-                  /> 
+                    style={{ marginRight: '5px' }}
+                  />
                   Due
                 </label>
                 <label style={{ display: "block" }} title='Only add Flashcards that are Disabled.'>
@@ -1684,7 +1689,8 @@ function CustomQueueWidget() {
                     type="checkbox" 
                     checked={searchOptions?.disabledOnly} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, disabledOnly: !searchOptions.disabledOnly })} 
-                  /> 
+                    style={{ marginRight: '5px' }}
+                  />
                   Disabled
                 </label>
                 <label style={{ display: "block" }} title='Only add Flashcards that are a Reference.'>
@@ -1692,7 +1698,8 @@ function CustomQueueWidget() {
                     type="checkbox" 
                     checked={searchOptions?.referencedOnly} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, referencedOnly: !searchOptions.referencedOnly })} 
-                  /> 
+                    style={{ marginRight: '5px' }}
+                  />
                   Referenced
                 </label>
                 <label style={{ display: "block" }} title='Only add Flashcards that were rated a particular way the last time'>
@@ -1700,7 +1707,8 @@ function CustomQueueWidget() {
                     type="checkbox" 
                     checked={searchOptions?.ratingOnly} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, ratingOnly: !searchOptions.ratingOnly })} 
-                  /> 
+                    style={{ marginRight: '5px' }}
+                  />Last Rating: 
                     <input type="radio" name="Rating" id="Rating_0" value="Rating_0" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.TOO_EARLY})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Skip")} />
                     <input type="radio" name="Rating" id="Rating_1" value="Rating_1" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.AGAIN})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Forgot")} />
                     <input type="radio" name="Rating" id="Rating_2" value="Rating_2" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.HARD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Partially recalled")} />
@@ -1714,41 +1722,41 @@ function CustomQueueWidget() {
             <div style={{ display: "flex", gap: "20px" }}>
               {/* Flashcards Referenced and Referencing group */}
               <div style={{ flex: 1 }}>
-                <h3>Include Flashcards</h3>
+                <h3>Include References</h3>
+                <label style={{ display: "block" }} title='Include Flashcards from Rems that are mentioned in Q/A'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includeReferencedRem} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedRem: !searchOptions.includeReferencedRem })} 
+                    style={{ marginRight: '5px' }}
+                  />
+                    Flashcard of Rems referenced in Flashcards of Queue.
+                </label>
                 <label style={{ display: "block" }} title='Include Flashcards that are mentioned in Q/A'>
                   <input 
                     type="checkbox" 
                     checked={searchOptions?.includeReferencedCard} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedCard: !searchOptions.includeReferencedCard })} 
-                  /> 
-                    Flashcards referenced in Q or A.
+                    style={{ marginRight: '5px' }}
+                  />
+                    Single Flashcards referenced in Flashcards of Queue.
                 </label>
                 <label style={{ display: "block" }} title='Include Flashcards that mention a Rem of the Queue.'>
                   <input 
                     type="checkbox" 
                     checked={searchOptions?.includeReferencingCard} 
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencingCard: !searchOptions.includeReferencingCard })} 
-                  /> 
-                    Other Flashcards that reference Rem in Q or A
-                </label>
-                
-              </div>
-              <div style={{ flex: 1 }}>
-                <h3>Include Rems</h3>
-                <label style={{ display: "block" }} title='Include Flashcards from Rems that are mentioned in Q/A'>
-                  <input 
-                    type="checkbox" 
-                    checked={searchOptions?.includeReferencedRem} 
-                    onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedRem: !searchOptions.includeReferencedRem })} 
-                  /> 
-                    Rems referenced in Q or A.
+                    style={{ marginRight: '5px' }}
+                  />
+                    Single Flashcards that reference Rem of Queue.
                 </label>
               </div>
             </div>
             <div>
-            <label>
-              Maximum Cards <input type='text' style={{ width: '30px' }} maxLength={4} value={searchOptions?.maximumNumberOfCards ?? ''} onChange={(e) => setSearchOptions({...searchOptions, maximumNumberOfCards: Number(e.target.value)})} /> 
-            </label>
+              <h3>Other</h3>
+              <label>
+                Maximum Cards <input type='text' style={{ width: '30px' }} maxLength={4} value={searchOptions?.maximumNumberOfCards ?? ''} onChange={(e) => setSearchOptions({...searchOptions, maximumNumberOfCards: Number(e.target.value)})} /> 
+              </label>
             </div>
             <div style={{ width: '100%', marginTop: '10px' }}>
             <MyRemNoteButton 

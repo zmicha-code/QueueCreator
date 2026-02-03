@@ -19,16 +19,16 @@ interface MyRemnoteRemViewerProps {
 /**
  * Fallback map of color indices to CSS colors.
  * Used only when the color value is a number (index into RemNote's palette).
- * Based on RemColor enum: Red=1, Orange=2, Yellow=3, Green=4, Blue=5, Purple=6, Brown=8, Pink=9
+ * tc: 1=Red, 2=Orange, 3=Yellow, 4=Green, 5=Purple, 6=Blue, 7=Gray
  */
 const fallbackColors: Record<number, string> = {
   1: "#ff6b6b",   // Red
   2: "#ffa94d",   // Orange
   3: "#ffd43b",   // Yellow
   4: "#69db7c",   // Green
-  5: "#4dabf7",   // Blue
-  6: "#da77f2",   // Purple
-  7: "#74c0fc",   // Cyan (if used)
+  5: "#da77f2",   // Purple
+  6: "#4dabf7",   // Blue
+  7: "#888888",   // Gray
   8: "#a1887f",   // Brown
   9: "#f48fb1",   // Pink
 };
@@ -136,6 +136,23 @@ async function getPlainTextFromRichText(plugin: RNPlugin, richText: RichTextInte
 }
 
 /**
+ * Get the hierarchical path of a Rem as a formatted string.
+ */
+async function getRemPath(plugin: RNPlugin, rem: Rem): Promise<string> {
+  const pathParts: string[] = [];
+  let currentRem: Rem | undefined = rem;
+  
+  // Traverse up the hierarchy
+  while (currentRem) {
+    const text = await getRemPlainText(plugin, currentRem);
+    pathParts.unshift(text || "(untitled)");
+    currentRem = await currentRem.getParentRem();
+  }
+  
+  return pathParts.join(" > ");
+}
+
+/**
  * Process RichTextInterface and return React elements for rendering.
  * Handles different element types:
  * - q: Reference to another rem (underlined, colored)
@@ -168,20 +185,34 @@ async function processRichTextToElements(
         // Reference to another rem - get the name, underline and color it
         const referencedRem = await plugin.rem.findOne(item._id);
         let refText = "";
+        let refPath = "";
         if (referencedRem) {
           refText = await getRemPlainText(plugin, referencedRem);
+          refPath = await getRemPath(plugin, referencedRem);
         } else if (item.textOfDeletedRem) {
           refText = await getPlainTextFromRichText(plugin, item.textOfDeletedRem);
+          refPath = refText;
         }
+        
+        // Create click handler to open the referenced rem
+        const remId = item._id;
+        const handleClick = async () => {
+          const rem = await plugin.rem.findOne(remId);
+          if (rem) {
+            await rem.openRemAsPage();
+          }
+        };
+        
         elements.push(
           <span
             key={idx}
             style={{
-              textDecoration: "underline",
-              color: "#4dabf7", // Light blue for references
+              color: "#5277b1", // muted blue-gray to match RemNote references
               cursor: "pointer",
+              fontWeight: "bold",
             }}
-            title={`Reference: ${refText}`}
+            title={refPath}
+            onClick={handleClick}
           >
             {refText || "(deleted reference)"}
           </span>
@@ -201,7 +232,7 @@ async function processRichTextToElements(
         }
 
         // Italic
-        if (item.u) {
+        if (item.l) {
           style.fontStyle = "italic";
         }
 
@@ -211,7 +242,7 @@ async function processRichTextToElements(
         }
 
         // Underline
-        if (item.l) {
+        if (item.u) {
           style.textDecoration = style.textDecoration
             ? `${style.textDecoration} underline`
             : "underline";

@@ -186,14 +186,15 @@ const breadcrumbCurrentStyle: React.CSSProperties = {
 };
 
 // Helper function to get the hierarchical path of a Rem
-async function getRemPath(plugin: RNPlugin, rem: Rem): Promise<{ id: string; text: string }[]> {
-  const path: { id: string; text: string }[] = [];
+async function getRemPath(plugin: RNPlugin, rem: Rem): Promise<{ id: string; text: string; isDocument: boolean }[]> {
+  const path: { id: string; text: string; isDocument: boolean }[] = [];
   let currentRem: Rem | undefined = rem;
   
   // Traverse up the hierarchy
   while (currentRem) {
     const text = await getRemText(plugin, currentRem);
-    path.unshift({ id: currentRem._id, text: text || "(untitled)" });
+    const isDocument = await currentRem.isDocument();
+    path.unshift({ id: currentRem._id, text: text || "(untitled)", isDocument });
     currentRem = await currentRem.getParentRem();
   }
   
@@ -419,7 +420,7 @@ export function MyRemNoteQueue({
   const [tableRefreshKey, setTableRefreshKey] = useState(0);
   
   // Hierarchical path (breadcrumb) for current card
-  const [currentPath, setCurrentPath] = useState<{ id: string; text: string }[]>([]);
+  const [currentPath, setCurrentPath] = useState<{ id: string; text: string; isDocument: boolean }[]>([]);
   
   // Predicted intervals for answer buttons
   const [predictedIntervals, setPredictedIntervals] = useState<{
@@ -785,10 +786,15 @@ export function MyRemNoteQueue({
               <span key={item.id} style={{ display: "flex", alignItems: "center" }}>
                 {index > 0 && <span style={breadcrumbSeparatorStyle}>›</span>}
                 <span 
-                  style={breadcrumbItemStyle} 
+                  style={{...breadcrumbItemStyle, display: "flex", alignItems: "center", gap: "4px"}} 
                   onClick={() => openRem(item.id)}
                   title={`Open "${item.text}"`}
                 >
+                  {item.isDocument && (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 7h14M5 12h14M5 17h10" />
+                    </svg>
+                  )}
                   {item.text}
                 </span>
               </span>

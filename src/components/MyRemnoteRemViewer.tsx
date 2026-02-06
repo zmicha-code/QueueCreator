@@ -14,6 +14,10 @@ interface MyRemnoteRemViewerProps {
   loadingText?: string;
   /** Text to show when rem is not found */
   notFoundText?: string;
+  /** Whether to recursively display children rems (default: true) */
+  showChildren?: boolean;
+  /** Depth level for indentation (used internally for recursion) */
+  depth?: number;
 }
 
 /**
@@ -473,9 +477,12 @@ export function MyRemnoteRemViewer({
   className,
   loadingText = "Loading...",
   notFoundText = "(Rem not found)",
+  showChildren = true,
+  depth = 0,
 }: MyRemnoteRemViewerProps) {
   const plugin = usePlugin();
   const [content, setContent] = useState<ReactNode[]>([]);
+  const [childrenIds, setChildrenIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<boolean>(false);
 
@@ -494,6 +501,7 @@ export function MyRemnoteRemViewer({
         if (!rem) {
           setError(true);
           setContent([]);
+          setChildrenIds([]);
         } else {
           const richText = rem.text;
           if (richText && richText.length > 0) {
@@ -504,6 +512,18 @@ export function MyRemnoteRemViewer({
           } else {
             if (isMounted) {
               setContent([]);
+            }
+          }
+          
+          // Load children IDs only if showChildren is enabled
+          if (showChildren) {
+            const children = await rem.getChildrenRem();
+            if (isMounted) {
+              setChildrenIds(children ? children.map(child => child._id) : []);
+            }
+          } else {
+            if (isMounted) {
+              setChildrenIds([]);
             }
           }
         }
@@ -530,7 +550,7 @@ export function MyRemnoteRemViewer({
     return () => {
       isMounted = false;
     };
-  }, [remId, plugin]);
+  }, [remId, plugin, showChildren]);
 
   const baseStyle: React.CSSProperties = {
     ...style,
@@ -552,10 +572,42 @@ export function MyRemnoteRemViewer({
     );
   }
 
+  const indentStyle: React.CSSProperties = {
+    marginLeft: depth > 0 ? `${depth * 16}px` : 0,
+  };
+
   return (
-    <span style={baseStyle} className={className}>
-      • {content.length > 0 ? content : "(empty)"}
-    </span>
+    <div style={{ ...baseStyle, ...indentStyle }} className={className}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
+        <svg 
+          width="6" 
+          height="6" 
+          viewBox="0 0 6 6" 
+          style={{ 
+            flexShrink: 0, 
+            marginTop: "0.5em",
+          }}
+        >
+          <circle cx="3" cy="3" r="3" fill="currentColor" />
+        </svg>
+        <div style={{ flex: 1 }}>
+          {content.length > 0 ? content : "(empty)"}
+        </div>
+      </div>
+      {childrenIds.length > 0 && (
+        <div style={{ marginTop: "4px" }}>
+          {childrenIds.map((childId) => (
+            <MyRemnoteRemViewer
+              key={childId}
+              remId={childId}
+              loadingText={loadingText}
+              notFoundText={notFoundText}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -845,6 +845,7 @@ export function MyRemNoteQueue({
         <div style={questionStyle}>
           <MyRemnoteRemViewer 
             remId={currentCardData.rem._id} 
+            showChildren={false}
             loadingText="(loading question...)"
             notFoundText="(question not found)"
           />

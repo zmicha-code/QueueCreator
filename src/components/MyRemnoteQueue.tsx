@@ -18,14 +18,12 @@ interface MyRemNoteQueueProps {
   width?: string | number;
   maxWidth?: string | number;
   onQueueComplete?: () => void;
-  /** Callback when queue order changes (e.g., card skipped or answered) */
-  onQueueOrderChange?: (newOrder: SearchData[]) => void;
+  /** Callback when queue changes (card skipped or rated) */
+  onCardInteraction?: (newOrder: SearchData[]) => void;
   /** Initial index to start from (for restoring position after tab switch) */
   initialIndex?: number;
   /** Callback when current index changes */
   onCurrentIndexChange?: (newIndex: number) => void;
-  /** Callback when a card is rated (to refresh display data) */
-  onCardRated?: () => void;
 }
 
 type AnswerState = "question" | "answer";
@@ -376,10 +374,9 @@ export function MyRemNoteQueue({
   width = "100%",
   maxWidth = "100%",
   onQueueComplete,
-  onQueueOrderChange,
+  onCardInteraction,
   initialIndex = 0,
   onCurrentIndexChange,
-  onCardRated,
 }: MyRemNoteQueueProps) {
   const plugin = usePlugin();
 
@@ -605,15 +602,57 @@ export function MyRemNoteQueue({
         await currentCardData.card.updateCardRepetitionStatus(score);
         // Trigger refresh of table data to show new rating
         setTableRefreshKey(prev => prev + 1);
-        // Notify parent to refresh display data (for table)
-        if (onCardRated) {
-          onCardRated();
-        }
       } catch (error) {
         console.error("Error updating card status:", error);
       }
     }
     goToNextCard();
+  };
+
+  const handleAgain = async () => {
+    if (currentCardData?.card) {
+      try {
+        await currentCardData.card.updateCardRepetitionStatus(QueueInteractionScore.AGAIN);
+        // Trigger refresh of table data to show new rating
+        setTableRefreshKey(prev => prev + 1);
+      } catch (error) {
+        console.error("Error updating card status:", error);
+      }
+    }
+
+    // Move card to random position in second half of remaining queue
+    if (currentCardData && queueOrder.length > 1) {
+      const newQueue = [...queueOrder];
+      const [againCard] = newQueue.splice(currentIndex, 1);
+
+      // Calculate second half range of remaining cards
+      const remainingCards = newQueue.length - currentIndex;
+      const halfPoint = Math.ceil(remainingCards / 2);
+      const insertStart = currentIndex + halfPoint;
+      const insertEnd = newQueue.length; // splice at length = append
+
+      // Random position in second half (insertStart to insertEnd inclusive)
+      const insertPosition = insertStart + Math.floor(Math.random() * (insertEnd - insertStart + 1));
+
+      newQueue.splice(insertPosition, 0, againCard);
+      setQueueOrder(newQueue);
+
+      // Notify parent of card interaction
+      if (onCardInteraction) {
+        onCardInteraction(newQueue);
+      }
+
+      setRenderKey(prev => prev + 1);
+
+      // Stay at same index (next card shifted into current position)
+      if (currentIndex >= newQueue.length) {
+        setCurrentIndex(newQueue.length - 1);
+      }
+      setAnswerState("question");
+    } else {
+      // Only one card left, just advance (will complete the queue)
+      goToNextCard();
+    }
   };
 
   const goToNextCard = useCallback(() => {
@@ -641,9 +680,9 @@ export function MyRemNoteQueue({
       const [skippedCard] = newQueue.splice(currentIndex, 1);
       newQueue.push(skippedCard);
       setQueueOrder(newQueue);
-      // Notify parent of queue order change so it can persist to storage
-      if (onQueueOrderChange) {
-        onQueueOrderChange(newQueue);
+      // Notify parent of card interaction so it can persist to storage
+      if (onCardInteraction) {
+        onCardInteraction(newQueue);
       }
       // Increment render key to force RemViewer to fully re-render
       setRenderKey(prev => prev + 1);
@@ -864,10 +903,10 @@ export function MyRemNoteQueue({
           </button>
           <button
             style={{...forgetButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
-            onClick={() => handleAnswer(QueueInteractionScore.AGAIN)}
+            onClick={handleAgain}
           >
             <img src={scoreToImage.get("Forgot")} alt="Forgot" style={{ width: '20px', height: '20px' }} />
-            {predictedIntervals.again}
+            {/*{predictedIntervals.again}*/}
           </button>
           <button
             style={{...partialButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}

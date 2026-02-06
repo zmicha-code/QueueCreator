@@ -1433,33 +1433,26 @@ function CustomQueueWidget() {
         updateCardInfo();
     }
 
-    // Handle queue order changes (e.g., when a card is skipped)
-    const handleQueueOrderChange = async (newOrder: SearchData[]) => {
-        // Update local state
-        setSearchDataList(newOrder);
-        
-        // Update storage so the new order persists across tab switches
-        const storableSearchData = newOrder.map(sd => ({
-            remId: sd.rem._id,
-            cardId: sd.card ? sd.card._id : null
-        }));
-        await plugin.storage.setSynced("currentQueueSearchData", storableSearchData);
-        
-        // Also update cardsData for table display
-        setCardsData(await questionsFromSearchData(plugin, newOrder));
-    };
-
     // Handle queue index changes (e.g., when a card is answered)
     const handleCurrentIndexChange = async (newIndex: number) => {
         setCurrentQueueIndex(newIndex);
         await plugin.storage.setSynced("currentQueueIndex", newIndex);
     };
 
-    // Handle card rated - refresh display data for the table
-    const handleCardRated = async () => {
-        if (searchDataList.length > 0) {
-            setCardsData(await questionsFromSearchData(plugin, searchDataList));
-        }
+    // Handle card interaction (skip or rated)
+    const handleCardInteraction = async (newOrder: SearchData[]) => {
+        // Update local state with the new order
+        setSearchDataList(newOrder);
+        
+        // Persist queue order to storage
+        const storableSearchData = newOrder.map(sd => ({
+            remId: sd.rem._id,
+            cardId: sd.card ? sd.card._id : null
+        }));
+        await plugin.storage.setSynced("currentQueueSearchData", storableSearchData);
+        
+        // Refresh cardsData for table display
+        setCardsData(await questionsFromSearchData(plugin, newOrder));
     };
 
     const openCurrentQueueRem = async () => {
@@ -1781,10 +1774,9 @@ function CustomQueueWidget() {
                       width={"100%"}
                       maxWidth={"100%"}
                       onQueueComplete={() => console.log("Done!")}
-                      onQueueOrderChange={handleQueueOrderChange}
+                      onCardInteraction={handleCardInteraction}
                       initialIndex={currentQueueIndex}
                       onCurrentIndexChange={handleCurrentIndexChange}
-                      onCardRated={handleCardRated}
                     />
                     {/* Disabled cards table - show when all cards in the queue are disabled */}
                     {cardsData.length > 0 && cardsData.every(c => c.isDisabled) && (

@@ -429,6 +429,8 @@ export function MyRemNoteQueue({
   
   // Hierarchical path (breadcrumb) for current card
   const [currentPath, setCurrentPath] = useState<{ id: string; text: string; isDocument: boolean }[]>([]);
+  // Whether the breadcrumb path is revealed
+  const [pathRevealed, setPathRevealed] = useState(false);
   
   // Predicted intervals for answer buttons
   const [predictedIntervals, setPredictedIntervals] = useState<{
@@ -548,6 +550,7 @@ export function MyRemNoteQueue({
     setQuestionText("");
     setAnswerTexts([]);
     setCurrentPath([]);
+    setPathRevealed(false);
     setIsLoading(true);
     
     async function loadContent() {
@@ -832,21 +835,30 @@ export function MyRemNoteQueue({
       <div style={cardContainerStyle}>
         {/* Hierarchical path breadcrumb (excluding current card) */}
         {currentPath.length > 1 && (
-          <div style={breadcrumbContainerStyle}>
+          <div 
+            style={{...breadcrumbContainerStyle, cursor: pathRevealed ? "default" : "pointer"}}
+            onClick={() => !pathRevealed && setPathRevealed(true)}
+            title={pathRevealed ? undefined : "Click to reveal path"}
+          >
             {currentPath.slice(0, -1).map((item, index, arr) => (
               <span key={item.id} style={{ display: "flex", alignItems: "center" }}>
                 {index > 0 && <span style={breadcrumbSeparatorStyle}>›</span>}
                 <span 
-                  style={{...breadcrumbItemStyle, display: "flex", alignItems: "center", gap: "4px"}} 
-                  onClick={() => openRem(item.id)}
-                  title={`Open "${item.text}"`}
+                  style={{...breadcrumbItemStyle, display: "flex", alignItems: "center", gap: "4px", cursor: pathRevealed ? "pointer" : "inherit"}} 
+                  onClick={(e) => {
+                    if (pathRevealed) {
+                      e.stopPropagation();
+                      openRem(item.id);
+                    }
+                  }}
+                  title={pathRevealed ? `Open "${item.text}"` : undefined}
                 >
-                  {item.isDocument && (
+                  {pathRevealed && item.isDocument && (
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M5 7h14M5 12h14M5 17h10" />
                     </svg>
                   )}
-                  {item.text}
+                  {pathRevealed ? item.text : "|||||"}
                 </span>
               </span>
             ))}

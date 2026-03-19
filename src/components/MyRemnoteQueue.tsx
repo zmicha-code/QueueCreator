@@ -677,7 +677,8 @@ export function MyRemNoteQueue({
         onCurrentIndexChange(newIndex);
       }
     } else {
-      // Queue complete
+      // Queue complete - increment index past the end to show completion state
+      setCurrentIndex(queueOrder.length);
       if (onQueueComplete) {
         onQueueComplete();
       }

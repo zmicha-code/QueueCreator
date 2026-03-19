@@ -148,6 +148,17 @@ const successMessageStyle: React.CSSProperties = {
   fontSize: "1.2em",
 };
 
+const earlyReviewStyle: React.CSSProperties = {
+  textAlign: "center",
+  fontSize: "14px",
+  color: "#f39c12",
+  fontWeight: 500,
+  marginTop: "12px",
+  padding: "8px",
+  backgroundColor: "rgba(243, 156, 18, 0.1)",
+  borderRadius: "6px",
+};
+
 const progressButtonStyle: React.CSSProperties = {
   textAlign: "center",
   fontSize: "14px",
@@ -898,39 +909,56 @@ export function MyRemNoteQueue({
           Show Answer
         </button>
       ) : (
-        <div style={buttonContainerStyle}>
-          <button style={skipButtonStyle} onClick={handleSkip}>
-            Skip
-          </button>
-          <button
-            style={{...forgetButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
-            onClick={handleAgain}
-          >
-            <img src={scoreToImage.get("Forgot")} alt="Forgot" style={{ width: '20px', height: '20px' }} />
-            {/*{predictedIntervals.again}*/}
-          </button>
-          <button
-            style={{...partialButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
-            onClick={() => handleAnswer(QueueInteractionScore.HARD)}
-          >
-            <img src={scoreToImage.get("Partially recalled")} alt="Partially Recalled" style={{ width: '20px', height: '20px' }} />
-            {predictedIntervals.hard}
-          </button>
-          <button
-            style={{...recalledButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
-            onClick={() => handleAnswer(QueueInteractionScore.GOOD)}
-          >
-            <img src={scoreToImage.get("Recalled with effort")} alt="Recalled With Effort" style={{ width: '20px', height: '20px' }} />
-            {predictedIntervals.good}
-          </button>
-          <button
-            style={{...easyButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
-            onClick={() => handleAnswer(QueueInteractionScore.EASY)}
-          >
-            <img src={scoreToImage.get("Easily recalled")} alt="Easily Recalled" style={{ width: '20px', height: '20px' }} />
-            {predictedIntervals.easy}
-          </button>
-        </div>
+        <>
+          <div style={buttonContainerStyle}>
+            <button style={skipButtonStyle} onClick={handleSkip}>
+              Skip
+            </button>
+            <button
+              style={{...forgetButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
+              onClick={handleAgain}
+            >
+              <img src={scoreToImage.get("Forgot")} alt="Forgot" style={{ width: '20px', height: '20px' }} />
+              {/*{predictedIntervals.again}*/}
+            </button>
+            <button
+              style={{...partialButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
+              onClick={() => handleAnswer(QueueInteractionScore.HARD)}
+            >
+              <img src={scoreToImage.get("Partially recalled")} alt="Partially Recalled" style={{ width: '20px', height: '20px' }} />
+              {predictedIntervals.hard}
+            </button>
+            <button
+              style={{...recalledButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
+              onClick={() => handleAnswer(QueueInteractionScore.GOOD)}
+            >
+              <img src={scoreToImage.get("Recalled with effort")} alt="Recalled With Effort" style={{ width: '20px', height: '20px' }} />
+              {predictedIntervals.good}
+            </button>
+            <button
+              style={{...easyButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
+              onClick={() => handleAnswer(QueueInteractionScore.EASY)}
+            >
+              <img src={scoreToImage.get("Easily recalled")} alt="Easily Recalled" style={{ width: '20px', height: '20px' }} />
+              {predictedIntervals.easy}
+            </button>
+          </div>
+          {(() => {
+            const lastInterval = getLastInterval(currentCardData.card.repetitionHistory);
+            if (lastInterval) {
+              const nextDate = lastInterval.intervalSetOn + lastInterval.workingInterval;
+              const earlyReviewTime = nextDate - Date.now();
+              if (earlyReviewTime > 0) {
+                return (
+                  <div style={earlyReviewStyle}>
+                    Early Review ({formatMilliseconds(earlyReviewTime, true)} early - Interval {formatMilliseconds(lastInterval.workingInterval, true)})!
+                  </div>
+                );
+              }
+            }
+            return null;
+          })()}
+        </>
       )}
     </div>
   );

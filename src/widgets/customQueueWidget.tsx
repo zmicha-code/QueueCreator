@@ -1723,7 +1723,7 @@ function CustomQueueWidget() {
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedRem: !searchOptions.includeReferencedRem })} 
                     style={{ marginRight: '5px' }}
                   />
-                    Flashcard of Rems referenced in Flashcards of Queue.
+                    All Flashcards of Rem referenced in Flashcards of Queue.
                 </label>
                 <label style={{ display: "block" }} title='Include Flashcards that are mentioned in Q/A'>
                   <input 
@@ -1732,7 +1732,7 @@ function CustomQueueWidget() {
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedCard: !searchOptions.includeReferencedCard })} 
                     style={{ marginRight: '5px' }}
                   />
-                    Single Flashcards referenced in Flashcards of Queue.
+                    Flashcard referenced in Flashcards of Queue.
                 </label>
                 <label style={{ display: "block" }} title='Include Flashcards that mention a Rem of the Queue.'>
                   <input 
@@ -1741,7 +1741,7 @@ function CustomQueueWidget() {
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencingCard: !searchOptions.includeReferencingCard })} 
                     style={{ marginRight: '5px' }}
                   />
-                    Single Flashcards that reference Rem of Queue.
+                    Flashcard that reference Rem of Queue.
                 </label>
               </div>
             </div>

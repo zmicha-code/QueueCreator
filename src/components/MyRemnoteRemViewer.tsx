@@ -18,6 +18,10 @@ interface MyRemnoteRemViewerProps {
   showChildren?: boolean;
   /** Depth level for indentation (used internally for recursion) */
   depth?: number;
+  /** Which hint type to show: 'front', 'back', or 'none' (default: 'none') */
+  showHint?: 'front' | 'back' | 'none';
+  /** External hint text to display (overrides showHint extraction) */
+  externalHint?: string;
 }
 
 /**
@@ -157,6 +161,30 @@ async function getRemPath(plugin: RNPlugin, rem: Rem): Promise<string> {
 }
 
 /**
+ * Extract hint text from backText based on hint type.
+ * Hints are stored as text elements with card-hint-front or card-hint-back flags.
+ */
+export function extractHintFromBackText(
+  backText: RichTextInterface | undefined,
+  hintType: 'front' | 'back'
+): string | undefined {
+  if (!backText) return undefined;
+  
+  const hintKey = hintType === 'front' ? 'card-hint-front' : 'card-hint-back';
+  
+  for (const item of backText) {
+    if (typeof item === 'object' && item !== null && 'i' in item && item.i === 'm') {
+      const itemAny = item as any;
+      if (itemAny[hintKey] === true && itemAny.text) {
+        return itemAny.text;
+      }
+    }
+  }
+  
+  return undefined;
+}
+
+/**
  * Process RichTextInterface and return React elements for rendering.
  * Handles different element types:
  * - q: Reference to another rem (underlined, colored)
@@ -170,14 +198,8 @@ async function processRichTextToElements(
 ): Promise<ReactNode[]> {
   const elements: ReactNode[] = [];
 
-  // Debug: log the entire richText array
-  console.log("[MyRemnoteRemViewer] Processing richText:", JSON.stringify(richText, null, 2));
-
   for (let idx = 0; idx < richText.length; idx++) {
     const item = richText[idx];
-
-    // Debug: log each item with its type
-    console.log(`[MyRemnoteRemViewer] Item ${idx}:`, typeof item === "string" ? `string: "${item}"` : `i="${item.i}"`, item);
 
     if (typeof item === "string") {
       elements.push(<span key={idx}>{item}</span>);
@@ -479,10 +501,13 @@ export function MyRemnoteRemViewer({
   notFoundText = "(Rem not found)",
   showChildren = true,
   depth = 0,
+  showHint = 'none',
+  externalHint,
 }: MyRemnoteRemViewerProps) {
   const plugin = usePlugin();
   const [content, setContent] = useState<ReactNode[]>([]);
   const [childrenIds, setChildrenIds] = useState<string[]>([]);
+  const [hintText, setHintText] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<boolean>(false);
 
@@ -502,7 +527,18 @@ export function MyRemnoteRemViewer({
           setError(true);
           setContent([]);
           setChildrenIds([]);
+          setHintText(undefined);
         } else {
+          // Use external hint if provided, otherwise extract from backText
+          if (externalHint) {
+            setHintText(externalHint);
+          } else if (showHint !== 'none') {
+            const hint = extractHintFromBackText(rem.backText, showHint);
+            setHintText(hint);
+          } else {
+            setHintText(undefined);
+          }
+          
           const richText = rem.text;
           if (richText && richText.length > 0) {
             const elements = await processRichTextToElements(plugin, richText);
@@ -550,7 +586,7 @@ export function MyRemnoteRemViewer({
     return () => {
       isMounted = false;
     };
-  }, [remId, plugin, showChildren]);
+  }, [remId, plugin, showChildren, showHint, externalHint]);
 
   const baseStyle: React.CSSProperties = {
     ...style,
@@ -592,6 +628,17 @@ export function MyRemnoteRemViewer({
         </svg>
         <div style={{ flex: 1 }}>
           {content.length > 0 ? content : "(empty)"}
+          {hintText && (
+            <span
+              style={{
+                color: "#888",
+                fontStyle: "italic",
+                marginLeft: "8px",
+              }}
+            >
+              (Hint: {hintText})
+            </span>
+          )}
         </div>
       </div>
       {childrenIds.length > 0 && (

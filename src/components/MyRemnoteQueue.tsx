@@ -11,7 +11,7 @@ import {
 import { useState, useEffect, useCallback } from "react";
 import { SearchData, getRemText } from "../widgets/customQueueWidget";
 import { MyRemNoteButtonSmall } from "./MyRemnoteButton";
-import { MyRemnoteRemViewer } from "./MyRemnoteRemViewer";
+import { MyRemnoteRemViewer, extractHintFromBackText } from "./MyRemnoteRemViewer";
 
 interface MyRemNoteQueueProps {
   /** Array of card data objects containing rem and card */
@@ -443,6 +443,9 @@ export function MyRemNoteQueue({
   
   // Card type (forward, backward, or cloze)
   const [cardType, setCardType] = useState<CardType>('forward');
+  
+  // Parent rem's hint (used for backward cards to show the same hint as forward)
+  const [parentHint, setParentHint] = useState<string | undefined>(undefined);
 
   const currentCardData = queueOrder[currentIndex];
 
@@ -556,6 +559,7 @@ export function MyRemNoteQueue({
     setCurrentPath([]);
     setPathRevealed(false);
     setCardType('forward'); // Reset to forward by default
+    setParentHint(undefined);
     setIsLoading(true);
     
     async function loadContent() {
@@ -568,6 +572,11 @@ export function MyRemNoteQueue({
         // Load card type (forward, backward, or cloze)
         const type = await currentCardData.card.getType();
         setCardType(type);
+        
+        // Extract hint from parent rem's backText (card-hint-back)
+        // This is used for both forward cards and backward cards
+        const hint = extractHintFromBackText(currentCardData.rem.backText, 'back');
+        setParentHint(hint);
         
         // Load question text
         const qText = await getRemText(plugin, currentCardData.rem);
@@ -877,7 +886,7 @@ export function MyRemNoteQueue({
         {/* Question (Front for forward cards, Back/children for backward cards) */}
         <div style={questionStyle}>
           {cardType === 'backward' ? (
-            // Backward card: show children as the question
+            // Backward card: show children as the question, use parent's hint
             childrenRems.length > 0 ? (
               <>
                 {regularChildren.map((childRem) => (
@@ -886,6 +895,7 @@ export function MyRemNoteQueue({
                       remId={childRem._id}
                       loadingText="(loading...)"
                       notFoundText="(not found)"
+                      externalHint={parentHint}
                     />
                   </div>
                 ))}
@@ -896,12 +906,13 @@ export function MyRemNoteQueue({
               </div>
             )
           ) : (
-            // Forward card (or cloze): show the rem itself as the question
+            // Forward card (or cloze): show the rem itself as the question, hint about back/answer
             <MyRemnoteRemViewer 
               remId={currentCardData.rem._id} 
               showChildren={false}
               loadingText="(loading question...)"
               notFoundText="(question not found)"
+              showHint="back"
             />
           )}
         </div>

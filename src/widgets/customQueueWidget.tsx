@@ -600,6 +600,7 @@ interface SearchOptions {
   includeReferencingCard: boolean,
   includeReferencedRem: boolean,
   includeReferencingRem: boolean,
+  includeTaggedRem: boolean, // Include flashcards that are tagged with this rem
   maximumNumberOfCards: number,
   useStructuralChildrenOnly: boolean // When true, only use structural children (not references)
 }
@@ -742,7 +743,8 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                       includeReferencedCard: false,
                                                       includeReferencedRem: false,
                                                       includeReferencingCard: false,
-                                                      includeReferencingRem: false},
+                                                      includeReferencingRem: false,
+                                                      includeTaggedRem: false},
                                                     processed,
                                                     addedCardIds,
                                                     addedDisabledRemIds,
@@ -786,7 +788,8 @@ async function getCardsOfRem( plugin: RNPlugin,
                                                       includeReferencedCard: false,
                                                       includeReferencedRem: false,
                                                       includeReferencingCard: false,
-                                                      includeReferencingRem: false},
+                                                      includeReferencingRem: false,
+                                                      includeTaggedRem: false},
                                                     processed,
                                                     addedCardIds,
                                                     addedDisabledRemIds,
@@ -819,6 +822,26 @@ async function getCardsOfRem( plugin: RNPlugin,
         if (question) {
           await addFlashcard(plugin, question, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
         }
+      }
+    }
+  }
+
+  // TAGGED REM: Include flashcards that are tagged with this rem
+  if (searchOptions.includeTaggedRem) {
+    const taggedRems = await rem.taggedRem();
+    for (const taggedRem of taggedRems) {
+      // Check if the tagged rem is a flashcard
+      const taggedIsFlashcard = await isFlashcard(plugin, taggedRem);
+      const taggedIsDisabled = await isDisabled(plugin, taggedRem);
+      
+      // Add disabled flashcard
+      if (taggedIsFlashcard && taggedIsDisabled) {
+        await addDisabledFlashcard(plugin, taggedRem, cards, addedDisabledRemIds, cardPath + "->(tagged)" + await getRemText(plugin, taggedRem));
+      }
+      
+      // Add enabled flashcard
+      if (taggedIsFlashcard && !taggedIsDisabled) {
+        await addFlashcard(plugin, taggedRem, cards, searchOptions, addedCardIds, cardPath + "->(tagged)" + await getRemText(plugin, taggedRem));
       }
     }
   }
@@ -1189,7 +1212,7 @@ function CustomQueueWidget() {
     const [isBuildQueueExpanded, setIsBuildQueueExpanded] = useState<boolean>(false);
     const [searchOptions, setSearchOptions] = useState<SearchOptions>({ includeThisRem: true,
                                                                         includeAncestors: false,
-                                                                        includeDescendants: false,
+                                                                        includeDescendants: true,
                                                                         dueOnly: false,
                                                                         disabledOnly: false,
                                                                         referencedOnly: false,
@@ -1201,6 +1224,7 @@ function CustomQueueWidget() {
                                                                         includeReferencingCard: false,
                                                                         includeReferencedRem: false,
                                                                         includeReferencingRem: false,
+                                                                        includeTaggedRem: true,
                                                                         maximumNumberOfCards: 1000,
                                                                         useStructuralChildrenOnly: false});
 
@@ -1344,7 +1368,8 @@ function CustomQueueWidget() {
                                                                                     includeReferencedCard: false,
                                                                                     includeReferencingCard: false,
                                                                                     includeReferencedRem: false,
-                                                                                    includeReferencingRem: false});
+                                                                                    includeReferencingRem: false,
+                                                                                    includeTaggedRem: false});
                 
                 // Create a Set of _ids from B for efficient lookup (filter out null cards)
                 const bIds = new Set(nonRefCards.filter(card => card.card !== null).map(card => card.card!._id));
@@ -1742,6 +1767,15 @@ function CustomQueueWidget() {
                     style={{ marginRight: '5px' }}
                   />
                     Flashcard that reference Rem of Queue.
+                </label>
+                <label style={{ display: "block" }} title='Include Flashcards that are tagged with this Rem.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.includeTaggedRem} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, includeTaggedRem: !searchOptions.includeTaggedRem })} 
+                    style={{ marginRight: '5px' }}
+                  />
+                    Flashcards tagged with this Rem.
                 </label>
               </div>
             </div>

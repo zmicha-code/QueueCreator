@@ -924,12 +924,12 @@ export function MyRemNoteQueue({
       ) : (
         <>
           <div style={buttonContainerStyle}>
-            <button style={skipButtonStyle} onClick={handleSkip}>
+            <button style={skipButtonStyle} onClick={handleSkip} title="Moves the card to the back of the queue without rating it.">
               Skip
             </button>
             <button
               style={{...forgetButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
-              onClick={handleAgain}
+              onClick={handleAgain} title="Moves the card to somewhere later in the queue."
             >
               <img src={scoreToImage.get("Forgot")} alt="Forgot" style={{ width: '20px', height: '20px' }} />
               {/*{predictedIntervals.again}*/}

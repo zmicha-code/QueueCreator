@@ -6,6 +6,7 @@ import {
   RNPlugin,
   RepetitionStatus,
   BuiltInPowerupCodes,
+  CardType,
 } from "@remnote/plugin-sdk";
 import { useState, useEffect, useCallback } from "react";
 import { SearchData, getRemText } from "../widgets/customQueueWidget";
@@ -439,6 +440,9 @@ export function MyRemNoteQueue({
     good: string;
     easy: string;
   }>({ again: '', hard: '', good: '', easy: '' });
+  
+  // Card type (forward, backward, or cloze)
+  const [cardType, setCardType] = useState<CardType>('forward');
 
   const currentCardData = queueOrder[currentIndex];
 
@@ -551,6 +555,7 @@ export function MyRemNoteQueue({
     setAnswerTexts([]);
     setCurrentPath([]);
     setPathRevealed(false);
+    setCardType('forward'); // Reset to forward by default
     setIsLoading(true);
     
     async function loadContent() {
@@ -560,6 +565,10 @@ export function MyRemNoteQueue({
       }
 
       try {
+        // Load card type (forward, backward, or cloze)
+        const type = await currentCardData.card.getType();
+        setCardType(type);
+        
         // Load question text
         const qText = await getRemText(plugin, currentCardData.rem);
         setQuestionText(qText);
@@ -865,40 +874,14 @@ export function MyRemNoteQueue({
           </div>
         )}
 
-        {/* Question (Front) - The Rem itself */}
+        {/* Question (Front for forward cards, Back/children for backward cards) */}
         <div style={questionStyle}>
-          <MyRemnoteRemViewer 
-            remId={currentCardData.rem._id} 
-            showChildren={false}
-            loadingText="(loading question...)"
-            notFoundText="(question not found)"
-          />
-        </div>
-
-        {/* Answer (Back) - Children Rems */}
-        {answerState === "answer" && (
-          <div style={answerStyle}>
-            {childrenRems.length > 0 ? (
+          {cardType === 'backward' ? (
+            // Backward card: show children as the question
+            childrenRems.length > 0 ? (
               <>
-                {/* Regular answers (without Extra Card Detail powerup) */}
                 {regularChildren.map((childRem) => (
-                  <div key={`answer-${childRem._id}-${renderKey}`} style={childRemStyle}>
-                    <MyRemnoteRemViewer 
-                      remId={childRem._id}
-                      loadingText="(loading...)"
-                      notFoundText="(not found)"
-                    />
-                  </div>
-                ))}
-                
-                {/* Horizontal separator if there are extra card details */}
-                {extraDetailChildren.length > 0 && (
-                  <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid var(--border-color, #ccc)" }} />
-                )}
-                
-                {/* Extra Card Detail answers */}
-                {extraDetailChildren.map((childRem) => (
-                  <div key={`extra-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                  <div key={`question-${childRem._id}-${renderKey}`} style={childRemStyle}>
                     <MyRemnoteRemViewer 
                       remId={childRem._id}
                       loadingText="(loading...)"
@@ -909,8 +892,85 @@ export function MyRemNoteQueue({
               </>
             ) : (
               <div style={noContentStyle}>
-                No answer content (no children found)
+                No question content (no children found)
               </div>
+            )
+          ) : (
+            // Forward card (or cloze): show the rem itself as the question
+            <MyRemnoteRemViewer 
+              remId={currentCardData.rem._id} 
+              showChildren={false}
+              loadingText="(loading question...)"
+              notFoundText="(question not found)"
+            />
+          )}
+        </div>
+
+        {/* Answer (Back/children for forward cards, Front/rem for backward cards) */}
+        {answerState === "answer" && (
+          <div style={answerStyle}>
+            {cardType === 'backward' ? (
+              // Backward card: show the rem itself as the answer
+              <>
+                <MyRemnoteRemViewer 
+                  remId={currentCardData.rem._id} 
+                  showChildren={false}
+                  loadingText="(loading answer...)"
+                  notFoundText="(answer not found)"
+                />
+                
+                {/* Show extra card details below the answer if any */}
+                {extraDetailChildren.length > 0 && (
+                  <>
+                    <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid var(--border-color, #ccc)" }} />
+                    {extraDetailChildren.map((childRem) => (
+                      <div key={`extra-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                        <MyRemnoteRemViewer 
+                          remId={childRem._id}
+                          loadingText="(loading...)"
+                          notFoundText="(not found)"
+                        />
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            ) : (
+              // Forward card (or cloze): show children as the answer
+              childrenRems.length > 0 ? (
+                <>
+                  {/* Regular answers (without Extra Card Detail powerup) */}
+                  {regularChildren.map((childRem) => (
+                    <div key={`answer-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                      <MyRemnoteRemViewer 
+                        remId={childRem._id}
+                        loadingText="(loading...)"
+                        notFoundText="(not found)"
+                      />
+                    </div>
+                  ))}
+                  
+                  {/* Horizontal separator if there are extra card details */}
+                  {extraDetailChildren.length > 0 && (
+                    <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid var(--border-color, #ccc)" }} />
+                  )}
+                  
+                  {/* Extra Card Detail answers */}
+                  {extraDetailChildren.map((childRem) => (
+                    <div key={`extra-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                      <MyRemnoteRemViewer 
+                        remId={childRem._id}
+                        loadingText="(loading...)"
+                        notFoundText="(not found)"
+                      />
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <div style={noContentStyle}>
+                  No answer content (no children found)
+                </div>
+              )
             )}
           </div>
         )}

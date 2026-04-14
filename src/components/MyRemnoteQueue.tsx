@@ -7,6 +7,7 @@ import {
   RepetitionStatus,
   BuiltInPowerupCodes,
   CardType,
+  RemType,
 } from "@remnote/plugin-sdk";
 import { useState, useEffect, useCallback } from "react";
 import { SearchData, getRemText } from "../widgets/customQueueWidget";
@@ -622,7 +623,8 @@ export function MyRemNoteQueue({
           if (hasExtraCardDetail) {
             extraDetail.push(child);
           } else {
-            regular.push(child);
+            if(await child.getType() != RemType.DESCRIPTOR)
+              regular.push(child);
           }
         }
         setRegularChildren(regular);
@@ -910,17 +912,21 @@ export function MyRemNoteQueue({
         {/* Question (Front for forward cards, Back/children for backward cards) */}
         <div style={questionStyle}>
           {cardType === 'backward' ? (
-            // Backward card: show children as the question, use parent's hint
+            // Backward card: show children as the question
             childrenRems.length > 0 ? (
               <>
                 {regularChildren.map((childRem) => (
                   <div key={`question-${childRem._id}-${renderKey}`} style={childRemStyle}>
-                    <MyRemnoteRemViewer 
-                      remId={childRem._id}
-                      loadingText="(loading...)"
-                      notFoundText="(not found)"
-                      externalHint={parentHint}
-                    />
+                    <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
+                      <MyRemnoteRemViewer 
+                        remId={childRem._id}
+                        loadingText="(loading...)"
+                        notFoundText="(not found)"
+                        externalHint={parentHint}
+                      />
+                      {/* For Property backward cards, show current rem name in parentheses */}
+                      {isPropertyCard && <span style={{ opacity: 0.7 }}>({questionText})</span>}
+                    </div>
                   </div>
                 ))}
               </>
@@ -956,14 +962,25 @@ export function MyRemNoteQueue({
         {answerState === "answer" && (
           <div style={answerStyle}>
             {cardType === 'backward' ? (
-              // Backward card: show the rem itself as the answer
+              // Backward card: show the rem itself as the answer (or parent for Property cards)
               <>
-                <MyRemnoteRemViewer 
-                  remId={currentCardData.rem._id} 
-                  showChildren={false}
-                  loadingText="(loading answer...)"
-                  notFoundText="(answer not found)"
-                />
+                {isPropertyCard && propertyParentRemId ? (
+                  // Property backward card: show parent rem as the answer
+                  <MyRemnoteRemViewer 
+                    remId={propertyParentRemId} 
+                    showChildren={false}
+                    loadingText="(loading answer...)"
+                    notFoundText="(answer not found)"
+                  />
+                ) : (
+                  // Regular backward card: show the rem itself as the answer
+                  <MyRemnoteRemViewer 
+                    remId={currentCardData.rem._id} 
+                    showChildren={false}
+                    loadingText="(loading answer...)"
+                    notFoundText="(answer not found)"
+                  />
+                )}
                 
                 {/* Show extra card details below the answer if any */}
                 {extraDetailChildren.length > 0 && (

@@ -446,6 +446,10 @@ export function MyRemNoteQueue({
   
   // Parent rem's hint (used for backward cards to show the same hint as forward)
   const [parentHint, setParentHint] = useState<string | undefined>(undefined);
+  
+  // Property card state: when a rem has a "Property" tag, show parent as main question
+  const [isPropertyCard, setIsPropertyCard] = useState<boolean>(false);
+  const [propertyParentRemId, setPropertyParentRemId] = useState<string | undefined>(undefined);
 
   const currentCardData = queueOrder[currentIndex];
 
@@ -560,6 +564,8 @@ export function MyRemNoteQueue({
     setPathRevealed(false);
     setCardType('forward'); // Reset to forward by default
     setParentHint(undefined);
+    setIsPropertyCard(false);
+    setPropertyParentRemId(undefined);
     setIsLoading(true);
     
     async function loadContent() {
@@ -577,6 +583,24 @@ export function MyRemNoteQueue({
         // This is used for both forward cards and backward cards
         const hint = extractHintFromBackText(currentCardData.rem.backText, 'back');
         setParentHint(hint);
+        
+        // Check for "Property" tag - if present, show parent as main question
+        const tagRems = await currentCardData.rem.getTagRems();
+        let hasPropertyTag = false;
+        for (const tagRem of tagRems) {
+          const tagText = await getRemText(plugin, tagRem);
+          if (tagText.toLowerCase() === 'property') {
+            hasPropertyTag = true;
+            break;
+          }
+        }
+        if (hasPropertyTag) {
+          const parentRem = await currentCardData.rem.getParentRem();
+          if (parentRem) {
+            setIsPropertyCard(true);
+            setPropertyParentRemId(parentRem._id);
+          }
+        }
         
         // Load question text
         const qText = await getRemText(plugin, currentCardData.rem);
@@ -905,6 +929,17 @@ export function MyRemNoteQueue({
                 No question content (no children found)
               </div>
             )
+          ) : isPropertyCard && propertyParentRemId ? (
+            // Property card: show parent rem with current rem name in parentheses
+            <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
+              <MyRemnoteRemViewer 
+                remId={propertyParentRemId} 
+                showChildren={false}
+                loadingText="(loading...)"
+                notFoundText="(not found)"
+              />
+              <span style={{ opacity: 0.7 }}>({questionText})</span>
+            </div>
           ) : (
             // Forward card (or cloze): show the rem itself as the question, hint about back/answer
             <MyRemnoteRemViewer 

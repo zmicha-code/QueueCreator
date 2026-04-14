@@ -12,7 +12,7 @@ import {
 import { useState, useEffect, useCallback } from "react";
 import { SearchData, getRemText } from "../widgets/customQueueWidget";
 import { MyRemNoteButtonSmall } from "./MyRemnoteButton";
-import { MyRemnoteRemViewer, extractHintFromBackText } from "./MyRemnoteRemViewer";
+import { MyRemnoteRemViewer, extractHintFromBackText, detectRichTextLatexCloze } from "./MyRemnoteRemViewer";
 
 interface MyRemNoteQueueProps {
   /** Array of card data objects containing rem and card */
@@ -451,6 +451,12 @@ export function MyRemNoteQueue({
   // Property card state: when a rem has a "Property" tag, show parent as main question
   const [isPropertyCard, setIsPropertyCard] = useState<boolean>(false);
   const [propertyParentRemId, setPropertyParentRemId] = useState<string | undefined>(undefined);
+  
+  // LaTeX cloze card state: when a rem's text contains {{c1::...}} in LaTeX
+  const [hasLatexCloze, setHasLatexCloze] = useState<boolean>(false);
+  
+  // Property parent LaTeX cloze state: when the property parent's text has cloze
+  const [propertyParentHasLatexCloze, setPropertyParentHasLatexCloze] = useState<boolean>(false);
 
   const currentCardData = queueOrder[currentIndex];
 
@@ -567,6 +573,8 @@ export function MyRemNoteQueue({
     setParentHint(undefined);
     setIsPropertyCard(false);
     setPropertyParentRemId(undefined);
+    setHasLatexCloze(false);
+    setPropertyParentHasLatexCloze(false);
     setIsLoading(true);
     
     async function loadContent() {
@@ -579,6 +587,10 @@ export function MyRemNoteQueue({
         // Load card type (forward, backward, or cloze)
         const type = await currentCardData.card.getType();
         setCardType(type);
+        
+        // Detect LaTeX cloze in rem text ({{c1::...}} syntax inside LaTeX blocks)
+        const latexClozeDetected = detectRichTextLatexCloze(currentCardData.rem.text);
+        setHasLatexCloze(latexClozeDetected);
         
         // Extract hint from parent rem's backText (card-hint-back)
         // This is used for both forward cards and backward cards
@@ -600,6 +612,9 @@ export function MyRemNoteQueue({
           if (parentRem) {
             setIsPropertyCard(true);
             setPropertyParentRemId(parentRem._id);
+            // Detect if property parent has LaTeX cloze
+            const parentHasCloze = detectRichTextLatexCloze(parentRem.text);
+            setPropertyParentHasLatexCloze(parentHasCloze);
           }
         }
         
@@ -943,6 +958,7 @@ export function MyRemNoteQueue({
                 showChildren={false}
                 loadingText="(loading...)"
                 notFoundText="(not found)"
+                clozeMode={propertyParentHasLatexCloze ? 'answer' : undefined}
               />
               <span style={{ opacity: 0.7 }}>({questionText})</span>
             </div>
@@ -954,6 +970,7 @@ export function MyRemNoteQueue({
               loadingText="(loading question...)"
               notFoundText="(question not found)"
               showHint="back"
+              clozeMode={hasLatexCloze ? 'question' : undefined}
             />
           )}
         </div>
@@ -971,6 +988,7 @@ export function MyRemNoteQueue({
                     showChildren={false}
                     loadingText="(loading answer...)"
                     notFoundText="(answer not found)"
+                    clozeMode={propertyParentHasLatexCloze ? 'answer' : undefined}
                   />
                 ) : (
                   // Regular backward card: show the rem itself as the answer
@@ -1000,40 +1018,60 @@ export function MyRemNoteQueue({
               </>
             ) : (
               // Forward card (or cloze): show children as the answer
-              childrenRems.length > 0 ? (
-                <>
-                  {/* Regular answers (without Extra Card Detail powerup) */}
-                  {regularChildren.map((childRem) => (
-                    <div key={`answer-${childRem._id}-${renderKey}`} style={childRemStyle}>
-                      <MyRemnoteRemViewer 
-                        remId={childRem._id}
-                        loadingText="(loading...)"
-                        notFoundText="(not found)"
-                      />
+              // For LaTeX cloze cards, also show the rem text with cloze revealed
+              <>
+                {/* For LaTeX cloze cards, show the rem text with cloze content revealed */}
+                {hasLatexCloze && (
+                  <div style={{ marginBottom: '12px' }}>
+                    <MyRemnoteRemViewer 
+                      remId={currentCardData.rem._id}
+                      showChildren={false}
+                      loadingText="(loading answer...)"
+                      notFoundText="(answer not found)"
+                      clozeMode="answer"
+                    />
+                  </div>
+                )}
+                
+                {/* Show children if any (as additional info or regular answer) */}
+                {childrenRems.length > 0 ? (
+                  <>
+                    {/* Regular answers (without Extra Card Detail powerup) */}
+                    {regularChildren.map((childRem) => (
+                      <div key={`answer-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                        <MyRemnoteRemViewer 
+                          remId={childRem._id}
+                          loadingText="(loading...)"
+                          notFoundText="(not found)"
+                        />
+                      </div>
+                    ))}
+                    
+                    {/* Horizontal separator if there are extra card details */}
+                    {extraDetailChildren.length > 0 && (
+                      <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid var(--border-color, #ccc)" }} />
+                    )}
+                    
+                    {/* Extra Card Detail answers */}
+                    {extraDetailChildren.map((childRem) => (
+                      <div key={`extra-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                        <MyRemnoteRemViewer 
+                          remId={childRem._id}
+                          loadingText="(loading...)"
+                          notFoundText="(not found)"
+                        />
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  // Only show "no answer content" if there's no LaTeX cloze either
+                  !hasLatexCloze && (
+                    <div style={noContentStyle}>
+                      No answer content (no children found)
                     </div>
-                  ))}
-                  
-                  {/* Horizontal separator if there are extra card details */}
-                  {extraDetailChildren.length > 0 && (
-                    <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid var(--border-color, #ccc)" }} />
-                  )}
-                  
-                  {/* Extra Card Detail answers */}
-                  {extraDetailChildren.map((childRem) => (
-                    <div key={`extra-${childRem._id}-${renderKey}`} style={childRemStyle}>
-                      <MyRemnoteRemViewer 
-                        remId={childRem._id}
-                        loadingText="(loading...)"
-                        notFoundText="(not found)"
-                      />
-                    </div>
-                  ))}
-                </>
-              ) : (
-                <div style={noContentStyle}>
-                  No answer content (no children found)
-                </div>
-              )
+                  )
+                )}
+              </>
             )}
           </div>
         )}

@@ -4,6 +4,92 @@ import katex from "katex";
 import "katex/contrib/mhchem"; // Enable \ce and \pu commands for chemistry
 import "katex/dist/katex.min.css";
 
+// ==================== CLOZE UTILITIES ====================
+
+/**
+ * Result of parsing LaTeX cloze syntax
+ */
+export interface ClozeParseResult {
+  hasCloze: boolean;
+  clozeIds: number[];
+  questionVersion: string;  // Cloze content replaced with placeholder
+  answerVersion: string;    // Cloze markers removed, content preserved
+}
+
+/**
+ * Regex to detect cloze syntax in LaTeX: {{c1::content}}, {{c2::content}}, etc.
+ * The (?!\}) negative lookahead ensures we match the final }} not followed by another },
+ * which correctly handles LaTeX nested braces like \frac{F}{A}}} where the last } is from {A}.
+ */
+const CLOZE_PATTERN = /\{\{c(\d+)::([\s\S]*?)\}\}(?!\})/g;
+
+/**
+ * Detects if a LaTeX string contains cloze syntax ({{c1::...}}, {{c2::...}}, etc.)
+ */
+export function detectLatexCloze(latexCode: string): boolean {
+  return /\{\{c\d+::/.test(latexCode);
+}
+
+/**
+ * Parses LaTeX cloze syntax and returns question/answer versions.
+ * - Question version: cloze content replaced with \cdots placeholder
+ * - Answer version: cloze markers stripped, content preserved
+ */
+export function parseLatexCloze(latexCode: string): ClozeParseResult {
+  const clozeIds: number[] = [];
+  let hasCloze = false;
+  
+  // First pass: collect cloze IDs
+  let match;
+  const tempRegex = /\{\{c(\d+)::([\s\S]*?)\}\}(?!\})/g;
+  while ((match = tempRegex.exec(latexCode)) !== null) {
+    hasCloze = true;
+    const clozeId = parseInt(match[1], 10);
+    if (!clozeIds.includes(clozeId)) {
+      clozeIds.push(clozeId);
+    }
+  }
+  
+  if (!hasCloze) {
+    return {
+      hasCloze: false,
+      clozeIds: [],
+      questionVersion: latexCode,
+      answerVersion: latexCode,
+    };
+  }
+  
+  // Question version: replace cloze content with placeholder
+  const questionVersion = latexCode.replace(CLOZE_PATTERN, '\\cdots');
+  
+  // Answer version: remove cloze markers but keep content
+  const answerVersion = latexCode.replace(CLOZE_PATTERN, '$2');
+  
+  return {
+    hasCloze,
+    clozeIds: clozeIds.sort((a, b) => a - b),
+    questionVersion,
+    answerVersion,
+  };
+}
+
+/**
+ * Checks if any LaTeX item in a RichTextInterface contains cloze syntax.
+ */
+export function detectRichTextLatexCloze(richText: RichTextInterface | undefined): boolean {
+  if (!richText) return false;
+  
+  for (const item of richText) {
+    if (typeof item !== 'string' && item.i === 'x') {
+      const latexCode = (item as any).text || '';
+      if (detectLatexCloze(latexCode)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 interface MyRemnoteRemViewerProps {
   /** The ID of the rem to display */
   remId: string;
@@ -23,6 +109,13 @@ interface MyRemnoteRemViewerProps {
   showHint?: 'front' | 'back' | 'none';
   /** External hint text to display (overrides showHint extraction) */
   externalHint?: string;
+  /**
+   * Cloze rendering mode for LaTeX formulas containing {{c1::...}} syntax:
+   * - 'question': Replace cloze content with placeholder (\cdots)
+   * - 'answer': Show full content with cloze markers stripped
+   * - 'none' or undefined: Render LaTeX as-is (may break KaTeX)
+   */
+  clozeMode?: 'question' | 'answer' | 'none';
 }
 
 /**
@@ -191,11 +284,13 @@ export function extractHintFromBackText(
  * - q: Reference to another rem (underlined, colored)
  * - m: Formatted text (bold, italic, highlight, etc.)
  * - i: Image
- * - x: Plain text
+ * - x: LaTeX (with optional cloze support)
+ * @param clozeMode - How to handle cloze syntax in LaTeX: 'question', 'answer', or 'none'
  */
 async function processRichTextToElements(
   plugin: RNPlugin,
-  richText: RichTextInterface
+  richText: RichTextInterface,
+  clozeMode?: 'question' | 'answer' | 'none'
 ): Promise<ReactNode[]> {
   const elements: ReactNode[] = [];
 
@@ -410,8 +505,18 @@ async function processRichTextToElements(
 
       case "x": {
         // LaTeX - render using KaTeX
-        const latexCode = item.text || "";
+        let latexCode = item.text || "";
         const isBlock = item.block === true;
+        
+        // Process cloze syntax if in cloze mode
+        if (clozeMode && clozeMode !== 'none') {
+          const parsed = parseLatexCloze(latexCode);
+          if (parsed.hasCloze) {
+            latexCode = clozeMode === 'question' 
+              ? parsed.questionVersion 
+              : parsed.answerVersion;
+          }
+        }
         
         try {
           const html = katex.renderToString(latexCode, {
@@ -506,6 +611,7 @@ export function MyRemnoteRemViewer({
   depth = 0,
   showHint = 'none',
   externalHint,
+  clozeMode,
 }: MyRemnoteRemViewerProps) {
   const plugin = usePlugin();
   const [content, setContent] = useState<ReactNode[]>([]);
@@ -544,7 +650,7 @@ export function MyRemnoteRemViewer({
           
           const richText = rem.text;
           if (richText && richText.length > 0) {
-            const elements = await processRichTextToElements(plugin, richText);
+            const elements = await processRichTextToElements(plugin, richText, clozeMode);
             if (isMounted) {
               setContent(elements);
             }
@@ -589,7 +695,7 @@ export function MyRemnoteRemViewer({
     return () => {
       isMounted = false;
     };
-  }, [remId, plugin, showChildren, showHint, externalHint]);
+  }, [remId, plugin, showChildren, showHint, externalHint, clozeMode]);
 
   const baseStyle: React.CSSProperties = {
     ...style,

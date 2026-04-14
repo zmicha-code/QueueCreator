@@ -597,24 +597,20 @@ export function MyRemNoteQueue({
         const hint = extractHintFromBackText(currentCardData.rem.backText, 'back');
         setParentHint(hint);
         
-        // Check for "Property" tag - if present, show parent as main question
-        const tagRems = await currentCardData.rem.getTagRems();
-        let hasPropertyTag = false;
-        for (const tagRem of tagRems) {
-          const tagText = await getRemText(plugin, tagRem);
-          if (tagText.toLowerCase() === 'property') {
-            hasPropertyTag = true;
-            break;
-          }
-        }
-        if (hasPropertyTag) {
-          const parentRem = await currentCardData.rem.getParentRem();
-          if (parentRem) {
-            setIsPropertyCard(true);
-            setPropertyParentRemId(parentRem._id);
-            // Detect if property parent has LaTeX cloze
-            const parentHasCloze = detectRichTextLatexCloze(parentRem.text);
-            setPropertyParentHasLatexCloze(parentHasCloze);
+        // Check if rem is a descriptor (not extends/implements/Eigenschaften) - if so, show parent as main question
+        const remType = await currentCardData.rem.getType();
+        if (remType === RemType.DESCRIPTOR) {
+          const remText = await getRemText(plugin, currentCardData.rem);
+          const excludedDescriptors = ['extends', 'implements', 'eigenschaften'];
+          if (!excludedDescriptors.includes(remText.toLowerCase())) {
+            const parentRem = await currentCardData.rem.getParentRem();
+            if (parentRem) {
+              setIsPropertyCard(true);
+              setPropertyParentRemId(parentRem._id);
+              // Detect if property parent has LaTeX cloze
+              const parentHasCloze = detectRichTextLatexCloze(parentRem.text);
+              setPropertyParentHasLatexCloze(parentHasCloze);
+            }
           }
         }
         

@@ -50,6 +50,41 @@ export async function isReferencingRem(plugin: RNPlugin, rem: Rem): Promise<bool
   return parents.length > 0;
 }
 
+// Returns the "imports" descriptor child of `rem`, if present.
+export async function getImportsDescriptor(plugin: RNPlugin, rem: Rem): Promise<Rem | undefined> {
+  try {
+    const children = await rem.getChildrenRem();
+    for (const child of children) {
+      try {
+        const [t, name] = await Promise.all([child.getType(), getRemText(plugin, child)]);
+        if (t === RemType.DESCRIPTOR && name.trim().toLowerCase() === "imports") {
+          return child;
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return undefined;
+}
+
+// Returns the child Rems referenced under the "imports" descriptor child of `rem`.
+export async function getImportsChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  const imp = await getImportsDescriptor(plugin, rem);
+  if (!imp) return [];
+  const resultMap = new Map<string, Rem>();
+  try {
+    const impChildren = await imp.getChildrenRem();
+    for (const c of impChildren) {
+      try {
+        const refs = await c.remsBeingReferenced();
+        for (const r of refs) {
+          if (!resultMap.has(r._id)) resultMap.set(r._id, r);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return Array.from(resultMap.values());
+}
+
 // -> AbstractionAndInheritance
 async function processRichText(plugin: RNPlugin, richText: RichTextInterface, showAlias = false): Promise<string> {
     const textPartsPromises = richText.map(async (item) => {
@@ -177,7 +212,7 @@ async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
     ]);
     const normalized = text.trim().toLowerCase();
 
-    if (type === RemType.DESCRIPTOR && normalized === "extends") {
+    if (type === RemType.DESCRIPTOR && (normalized === "extends" || normalized === "imports")) {
       continue;
     }
 
@@ -259,7 +294,7 @@ export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<R
     if (
       specialNames.includes(text) ||
       specialNameParts.some((part) => text.startsWith(part)) ||
-      (type === RemType.DESCRIPTOR && normalized === "extends")
+      (type === RemType.DESCRIPTOR && (normalized === "extends" || normalized === "imports"))
     ) {
       continue;
     }
@@ -288,7 +323,7 @@ export async function getCleanChildrenOnly(plugin: RNPlugin, rem: Rem): Promise<
     if (
       specialNames.includes(text) ||
       specialNameParts.some((part) => text.startsWith(part)) ||
-      (type === RemType.DESCRIPTOR && normalized === "extends")
+      (type === RemType.DESCRIPTOR && (normalized === "extends" || normalized === "imports"))
     ) {
       continue;
     }
@@ -697,6 +732,16 @@ async function getCardsOfRem( plugin: RNPlugin,
   let childrenRem = searchOptions.useStructuralChildrenOnly 
     ? await getCleanChildrenOnly(plugin, rem)
     : await getCleanChildrenAll(plugin, rem);
+
+  // Add imported rems to childrenRem (imports work like inverse extends)
+  if (!searchOptions.useStructuralChildrenOnly) {
+    const importedRems = await getImportsChildren(plugin, rem);
+    for (const imp of importedRems) {
+      if (!childrenRem.some(c => c._id === imp._id)) {
+        childrenRem.push(imp);
+      }
+    }
+  }
 
   const flashcard = await isFlashcard(plugin, rem);
   const disabled = await isDisabled(plugin, rem);

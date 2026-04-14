@@ -1,6 +1,7 @@
 import { usePlugin, Rem, RNPlugin, RichTextInterface } from "@remnote/plugin-sdk";
 import { useState, useEffect, ReactNode } from "react";
 import katex from "katex";
+import "katex/contrib/mhchem"; // Enable \ce and \pu commands for chemistry
 import "katex/dist/katex.min.css";
 
 interface MyRemnoteRemViewerProps {
@@ -417,6 +418,8 @@ async function processRichTextToElements(
             throwOnError: false,
             displayMode: isBlock,
             output: "html",
+            strict: false,  // Bypass quirks mode detection in sandbox iframe
+            trust: true,    // Allow special LaTeX commands
           });
           
           elements.push(

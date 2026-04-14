@@ -66,7 +66,7 @@ const config = {
           filename: '[name].css',
         }),
     new HtmlWebpackPlugin({
-      templateContent: `
+      templateContent: `<!DOCTYPE html>
       <body></body>
       <script type="text/javascript">
       const urlSearchParams = new URLSearchParams(window.location.search);

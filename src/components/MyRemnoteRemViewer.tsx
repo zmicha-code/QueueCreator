@@ -717,6 +717,10 @@ export function MyRemnoteRemViewer({
     );
   }
 
+  if (content.length === 0 && childrenIds.length === 0) {
+    return null;
+  }
+
   const indentStyle: React.CSSProperties = {
     marginLeft: depth > 0 ? `${depth * 16}px` : 0,
   };
@@ -736,7 +740,7 @@ export function MyRemnoteRemViewer({
           <circle cx="3" cy="3" r="3" fill="currentColor" />
         </svg>
         <div style={{ flex: 1 }}>
-          {content.length > 0 ? content : "(empty)"}
+          {content}
           {hintText && (
             <span
               style={{

@@ -1653,7 +1653,7 @@ function CustomQueueWidget() {
     ]);
 
     return (
-      <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10, overflowY: "auto" }} >
+      <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10, overflowY: "auto", minHeight: 0 }} >
         {/* Tab Header */}
         <div style={{ display: "flex", borderBottom: "2px solid #ddd", marginBottom: 10 }}>
           <button
@@ -1845,9 +1845,9 @@ function CustomQueueWidget() {
           loading ? (
             <div>Loading flashcards...</div>
           ) : cardsData.length > 0 ? (
-            <div style={{ height: "100%", flex: 1 }}>
-              <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-                <div onClick={onMouseClick} style={{ height: "100%", maxHeight: "100%", overflowY: "auto", padding: "10px", position: "relative" }}>
+            <div style={{ flex: 1, minHeight: 0, maxHeight: "calc(100dvh - 140px)", overflowY: "auto" }}>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <div onClick={onMouseClick} style={{ padding: "10px", position: "relative" }}>
                     <MyRemNoteQueue
                       cards={searchDataList}
                       width={"100%"}

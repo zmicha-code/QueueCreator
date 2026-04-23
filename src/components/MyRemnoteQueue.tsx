@@ -38,6 +38,7 @@ const containerBaseStyle: React.CSSProperties = {
   padding: "16px",
   boxSizing: "border-box",
   position: "relative",
+  minHeight: 0,
 };
 
 const cardContainerStyle: React.CSSProperties = {
@@ -46,7 +47,7 @@ const cardContainerStyle: React.CSSProperties = {
   padding: "16px",
   minHeight: "200px",
   position: "relative",
-  overflow: "hidden",
+  overflow: "visible",
 };
 
 const questionStyle: React.CSSProperties = {

@@ -16,7 +16,7 @@ const MyRemNoteButton: React.FC<MyRemNoteButtonProps> = ({ img, text, onClick, a
           ? 'hover:bg-gray-5 text-gray-100'
           : 'bg-gray-300 text-gray-500 cursor-not-allowed'
       }`}
-      onClick={onClick}
+      onClick={active ? onClick : undefined}
       style={style}
     >
       {img && (
@@ -50,7 +50,7 @@ export const MyRemNoteButtonSmall: React.FC<MyRemNoteButtonProps> = ({ img, text
           ? 'hover:bg-gray-5 text-gray-100'
           : 'bg-gray-300 text-gray-500 cursor-not-allowed'
       }`}
-      onClick={onClick}
+      onClick={active ? onClick : undefined}
     >
       {img && (
         <div style={{ display: 'flex', alignItems: 'center', paddingRight: '6px' }}>

@@ -10,7 +10,7 @@ import {
   RemType,
 } from "@remnote/plugin-sdk";
 import { useState, useEffect, useCallback } from "react";
-import { SearchData, getRemText } from "../widgets/customQueueWidget";
+import { SearchData, getCleanTags, getRemText } from "../widgets/customQueueWidget";
 import { MyRemNoteButtonSmall } from "./MyRemnoteButton";
 import { MyRemnoteRemViewer, extractHintFromBackText, detectRichTextLatexCloze } from "./MyRemnoteRemViewer";
 
@@ -194,6 +194,25 @@ const breadcrumbItemStyle: React.CSSProperties = {
 
 const breadcrumbCurrentStyle: React.CSSProperties = {
   fontWeight: 500,
+  color: "var(--text-normal, inherit)",
+};
+
+const tagListStyle: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px",
+  marginBottom: "12px",
+};
+
+const tagChipStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "4px 10px",
+  borderRadius: "999px",
+  fontSize: "12px",
+  lineHeight: 1.4,
+  backgroundColor: "var(--background-secondary, rgba(0,0,0,0.05))",
+  border: "1px solid var(--border-color, #ddd)",
   color: "var(--text-normal, inherit)",
 };
 
@@ -434,6 +453,7 @@ export function MyRemNoteQueue({
   const [currentPath, setCurrentPath] = useState<{ id: string; text: string; isDocument: boolean }[]>([]);
   // Whether the breadcrumb path is revealed
   const [pathRevealed, setPathRevealed] = useState(false);
+  const [currentTags, setCurrentTags] = useState<{ id: string; text: string }[]>([]);
   
   // Predicted intervals for answer buttons
   const [predictedIntervals, setPredictedIntervals] = useState<{
@@ -570,6 +590,7 @@ export function MyRemNoteQueue({
     setAnswerTexts([]);
     setCurrentPath([]);
     setPathRevealed(false);
+    setCurrentTags([]);
     setCardType('forward'); // Reset to forward by default
     setParentHint(undefined);
     setIsPropertyCard(false);
@@ -622,6 +643,16 @@ export function MyRemNoteQueue({
         // Load hierarchical path
         const path = await getRemPath(plugin, currentCardData.rem);
         setCurrentPath(path);
+
+        // Load user-facing tags for the current card
+        const tagRems = await getCleanTags(plugin, currentCardData.rem);
+        const tags = await Promise.all(
+          tagRems.map(async (tagRem) => ({
+            id: tagRem._id,
+            text: await getRemText(plugin, tagRem),
+          }))
+        );
+        setCurrentTags(tags.filter((tag) => tag.text.trim().length > 0));
         
         // Load children and their text
         const children = await currentCardData.rem.getChildrenRem();
@@ -654,6 +685,7 @@ export function MyRemNoteQueue({
         setExtraDetailChildren([]);
         setQuestionText("");
         setAnswerTexts([]);
+        setCurrentTags([]);
       }
       setIsLoading(false);
     }
@@ -916,6 +948,16 @@ export function MyRemNoteQueue({
                   )}
                   {pathRevealed ? item.text : "|||||"}
                 </span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {currentTags.length > 0 && (
+          <div style={tagListStyle}>
+            {currentTags.map((tag) => (
+              <span key={tag.id} style={tagChipStyle}>
+                {tag.text}
               </span>
             ))}
           </div>

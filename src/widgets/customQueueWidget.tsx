@@ -25,6 +25,42 @@ export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem): Promise<
   return undefined;
 }
 
+// Builds the set of all property IDs that are "known" to the root rem:
+// for each direct DESCRIPTOR or DOCUMENT child P of rem, includes P itself
+// plus all IDs in P's ancestor and descendant property-hierarchy chains.
+// Used to filter out "new" properties introduced by descendants.
+async function computeIncludedPropertyIds(plugin: RNPlugin, rem: Rem): Promise<Set<string>> {
+  const ids = new Set<string>();
+
+  // Collect rem itself plus all its ancestor classes so that properties from
+  // any class in the hierarchy are included in the allowlist.
+  const lineages = await getAncestorLineage(plugin, rem);
+  const allClassRems = new Map<string, Rem>();
+  allClassRems.set(rem._id, rem);
+  for (const lineage of lineages) {
+    for (const ancestor of lineage) {
+      allClassRems.set(ancestor._id, ancestor);
+    }
+  }
+
+  // For every class in the hierarchy, collect all its properties plus their
+  // property-hierarchy ancestors and descendants into the allowlist.
+  await Promise.all(Array.from(allClassRems.values()).map(async (classRem) => {
+    const children = await getCleanChildren(plugin, classRem);
+    await Promise.all(children.map(async (child) => {
+      ids.add(child._id);
+      const [ancestorIds, descendantIds] = await Promise.all([
+        getAncestorIds(plugin, child),
+        getDescendantIds(plugin, child),
+      ]);
+      for (const id of ancestorIds) ids.add(id);
+      for (const id of descendantIds) ids.add(id);
+    }));
+  }));
+
+  return ids;
+}
+
 // Returns the parent Rems referenced under the "extends" descriptor child of `rem`.
 export async function getExtendsParents(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
   const ext = await getExtendsDescriptor(plugin, rem);
@@ -210,13 +246,15 @@ async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
       getRemText(plugin, childRem),
       childRem.getType(),
     ]);
-    const normalized = text.trim().toLowerCase();
+    const baseName = text.includes(' > ') ? text.split(' > ').pop()!.trim() : text.trim();
+    const normalized = baseName.toLowerCase();
 
     if (type === RemType.DESCRIPTOR && (normalized === "extends" || normalized === "imports")) {
       continue;
     }
 
-    if (!specialNames.includes(text)) {
+    if (!specialNames.includes(text) && !specialNames.includes(baseName) &&
+        !specialNameParts.some((part) => text.startsWith(part)) && !specialNameParts.some((part) => baseName.startsWith(part))) {
       cleanChildren.push(childRem);
     }
   }
@@ -289,11 +327,12 @@ export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<R
   for (let i = 0; i < uniqueRems.length; i++) {
     const text = texts[i];
     const type = types[i];
-    const normalized = text.trim().toLowerCase();
+    const baseName = text.includes(' > ') ? text.split(' > ').pop()!.trim() : text.trim();
+    const normalized = baseName.toLowerCase();
 
     if (
-      specialNames.includes(text) ||
-      specialNameParts.some((part) => text.startsWith(part)) ||
+      specialNames.includes(text) || specialNames.includes(baseName) ||
+      specialNameParts.some((part) => text.startsWith(part)) || specialNameParts.some((part) => baseName.startsWith(part)) ||
       (type === RemType.DESCRIPTOR && (normalized === "extends" || normalized === "imports"))
     ) {
       continue;
@@ -318,11 +357,12 @@ export async function getCleanChildrenOnly(plugin: RNPlugin, rem: Rem): Promise<
   for (let i = 0; i < childrenRems.length; i++) {
     const text = texts[i];
     const type = types[i];
-    const normalized = text.trim().toLowerCase();
+    const baseName = text.includes(' > ') ? text.split(' > ').pop()!.trim() : text.trim();
+    const normalized = baseName.toLowerCase();
 
     if (
-      specialNames.includes(text) ||
-      specialNameParts.some((part) => text.startsWith(part)) ||
+      specialNames.includes(text) || specialNames.includes(baseName) ||
+      specialNameParts.some((part) => text.startsWith(part)) || specialNameParts.some((part) => baseName.startsWith(part)) ||
       (type === RemType.DESCRIPTOR && (normalized === "extends" || normalized === "imports"))
     ) {
       continue;
@@ -338,6 +378,51 @@ export async function getCleanChildrenOnly(plugin: RNPlugin, rem: Rem): Promise<
 export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<Rem[][]> {
   const lineages = await findPaths(plugin, rem, [rem]);
   return lineages;
+}
+
+// Returns the IDs of all ancestor classes of rem (excludes rem itself).
+export async function getAncestorIds(plugin: RNPlugin, rem: Rem): Promise<Set<string>> {
+  const lineages = await getAncestorLineage(plugin, rem);
+  const ids = new Set<string>();
+  for (const lineage of lineages) {
+    for (const ancestor of lineage) {
+      if (ancestor._id !== rem._id) ids.add(ancestor._id);
+    }
+  }
+  return ids;
+}
+
+// Returns the IDs of all class-hierarchy descendants of rem (excludes rem itself).
+// Only traverses class-like rems: skips DESCRIPTORs (direct properties),
+// DOCUMENTs (regular properties), and flashcards (leaf nodes).
+export async function getDescendantIds(
+  plugin: RNPlugin,
+  rem: Rem,
+  visited: Set<string> = new Set([rem._id])
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const children = await getCleanChildrenAll(plugin, rem);
+  for (const child of children) {
+    if (visited.has(child._id)) continue;
+    const type = await child.getType();
+    // Skip structural sub-properties of this rem only (not extends-based descendants
+    // that happen to be descriptors or documents belonging to another class).
+    const parent = await child.getParentRem();
+    const isDirectChild = !parent || parent._id === rem._id;
+    if (type === RemType.DESCRIPTOR && isDirectChild) continue;
+    if (await child.isDocument() && isDirectChild) continue;
+    if (await isFlashcard(plugin, child)) {
+      // Leaf node — add to exclusion set but don't recurse into it.
+      visited.add(child._id);
+      ids.add(child._id);
+      continue;
+    }
+    visited.add(child._id);
+    ids.add(child._id);
+    const childDescendants = await getDescendantIds(plugin, child, visited);
+    for (const did of childDescendants) ids.add(did);
+  }
+  return ids;
 }
 
 async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]): Promise<Rem[][]> {
@@ -599,7 +684,7 @@ function formatMilliseconds(ms : number, abs = false): string {
   // Round to 2 decimal places for clean output
   value = Math.round(value * 100) / 100;
 
-  // Pluralize unit if value isn’t 1
+  // Pluralize unit if value isnâ€™t 1
   const plural = value !== 1 ? 's' : '';
   //return `${value} ${unit}${plural}`;
   return (isNegative && !abs ? "-" : "") + value + " " + unit + plural;
@@ -636,8 +721,10 @@ interface SearchOptions {
   includeReferencedRem: boolean,
   includeReferencingRem: boolean,
   includeTaggedRem: boolean, // Include flashcards that are tagged with this rem
+  includeEigenschaften: boolean, // Include flashcards from the Eigenschaften subtree of each rem
+  excludeNewProperties: boolean, // When true, skip properties in descendants that have no "extends" child (i.e. newly defined, not inherited)
   maximumNumberOfCards: number,
-  useStructuralChildrenOnly: boolean // When true, only use structural children (not references)
+  // TODO: includeReferencedCard, includeReferencingCard, includeReferencedRem, includeReferencingRem â€” not yet wired into the new card-collection architecture
 }
 
 // Helper function assumed to be defined elsewhere
@@ -709,382 +796,337 @@ async function addDisabledFlashcard(plugin: RNPlugin,
   }
 }
 
-async function getCardsOfRem( plugin: RNPlugin,
-                              rem: Rem,
-                              searchOptions: SearchOptions,
-                              processed = new Set<string>(),
-                              addedCardIds = new Set<string>(),
-                              addedDisabledRemIds = new Set<string>(),
-                              cardPath: string = "",
-                              isInitialRem: boolean = true): Promise<SearchData[]> {
-  // A Rem might appear as [[Rem]] in an answer (searchOptions.includeDescendants = false) and then later regulary (includeDescendants = true). 
-  // Checking this would then prevent the full recursion because the Rem was already visited with lesser search depth
-  if (processed.has(rem._id)) return [];
+// =============================================================================
+// Card Collection: shared context
+// =============================================================================
 
-  if(searchOptions.includeDescendants)
-    processed.add(rem._id);
+// Shared mutable state threaded through all card-collection functions.
+// Created once per top-level getCardsOfRem call; passed to all sub-functions.
+interface CardCollectionContext {
+  addedCardIds: Set<string>;        // dedup enabled cards globally
+  addedDisabledRemIds: Set<string>; // dedup disabled cards globally
+  excludedPropertyIds: Set<string>; // unchecked property IDs from the UI
+  processedRemIds: Set<string>;     // cycle / revisit guard
+  includedPropertyIds: Set<string> | null; // null = no filter; non-null = allowlist of root class property IDs (+ their property-hierarchy ancestors/descendants)
+}
 
-  //console.log("GetCardsOfRem: " + await getRemText(plugin, rem));
+// Add all cards from a rem (known to be a flashcard) to results, using ctx for dedup.
+async function collectFlashcardToCtx(
+  plugin: RNPlugin, rem: Rem, results: SearchData[], ctx: CardCollectionContext
+): Promise<void> {
+  const remCards = rem.getCards ? await rem.getCards() : [];
+  if (remCards.length > 0) {
+    for (const card of remCards) {
+      if (!ctx.addedCardIds.has(card._id)) {
+        ctx.addedCardIds.add(card._id);
+        results.push({ rem, card });
+      }
+    }
+  } else {
+    // No cards returned but rem is a flashcard â†’ it is disabled
+    if (!ctx.addedDisabledRemIds.has(rem._id)) {
+      ctx.addedDisabledRemIds.add(rem._id);
+      results.push({ rem, card: null });
+    }
+  }
+}
 
-  let cards: SearchData[] = [];
+// =============================================================================
+// Card Collection: Eigenschaften
+// =============================================================================
 
-  // Use structural children only when specified (e.g., for ancestor traversal)
-  let childrenRem = searchOptions.useStructuralChildrenOnly 
-    ? await getCleanChildrenOnly(plugin, rem)
-    : await getCleanChildrenAll(plugin, rem);
+// DFS over raw children (no filtering â€” Eigenschaften content is trusted).
+// Adds every flashcard in the subtree. Guards against cycles via processedRemIds.
+async function getAllFlashcardsInSubtree(
+  plugin: RNPlugin, rem: Rem, results: SearchData[], ctx: CardCollectionContext
+): Promise<void> {
+  if (ctx.processedRemIds.has(rem._id)) return;
+  ctx.processedRemIds.add(rem._id);
 
-  // Add imported rems to childrenRem (imports work like inverse extends)
-  if (!searchOptions.useStructuralChildrenOnly) {
-    const importedRems = await getImportsChildren(plugin, rem);
-    for (const imp of importedRems) {
-      if (!childrenRem.some(c => c._id === imp._id)) {
-        childrenRem.push(imp);
+  if (await isFlashcard(plugin, rem)) {
+    await collectFlashcardToCtx(plugin, rem, results, ctx);
+  }
+
+  const children = await rem.getChildrenRem();
+  for (const child of children) {
+    await getAllFlashcardsInSubtree(plugin, child, results, ctx);
+  }
+}
+
+// Collect all flashcards from the "Eigenschaften"/"Properties" DESCRIPTOR child of rem.
+async function getCardsOfEigenschaften(
+  plugin: RNPlugin, rem: Rem, ctx: CardCollectionContext
+): Promise<SearchData[]> {
+  const results: SearchData[] = [];
+  const rawChildren = await rem.getChildrenRem();
+  for (const child of rawChildren) {
+    const type = await child.getType();
+    if (type !== RemType.DESCRIPTOR) continue;
+    const name = await getRemText(plugin, child);
+    const baseName = name.includes(' > ') ? name.split(' > ').pop()!.trim() : name.trim();
+    const baseNorm = baseName.toLowerCase();
+    if (baseNorm === 'eigenschaften' || baseNorm === 'properties') {
+      await getAllFlashcardsInSubtree(plugin, child, results, ctx);
+      break; // only one Eigenschaften per rem
+    }
+  }
+  return results;
+}
+
+// =============================================================================
+// Card Collection: Direct properties (DESCRIPTOR children)
+// =============================================================================
+
+// Collect cards from one direct property rem, and (if includeDescendants)
+// from all rems that extend this property, recursively.
+async function getCardsOfDirectProperty(
+  plugin: RNPlugin, propRem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
+): Promise<SearchData[]> {
+  if (ctx.excludedPropertyIds.has(propRem._id)) return [];
+  if (ctx.processedRemIds.has(propRem._id)) return [];
+  ctx.processedRemIds.add(propRem._id);
+
+  const results: SearchData[] = [];
+
+  // Direct properties are typically flashcards â€” collect their cards.
+  if (await isFlashcard(plugin, propRem)) {
+    await collectFlashcardToCtx(plugin, propRem, results, ctx);
+  }
+
+  // Follow the extension chain: find all rems that extend this property via "extends".
+  if (searchOptions.includeDescendants) {
+    const referencingRems = await propRem.remsReferencingThis();
+    for (const ref of referencingRems) {
+      const owner = await resolveExtendsOwner(plugin, ref);
+      if (!owner || owner._id === propRem._id) continue;
+      // Only follow DESCRIPTOR owners â€” those are direct property extensions.
+      // Non-DESCRIPTOR owners are class descendants, handled by getCardsOfDescendants.
+      if ((await owner.getType()) !== RemType.DESCRIPTOR) continue;
+      if (ctx.excludedPropertyIds.has(owner._id)) continue;
+      // Skip owners not in the root class's known property set (prevents new-property leakage via extension chain)
+      if (ctx.includedPropertyIds !== null && !ctx.includedPropertyIds.has(owner._id)) continue;
+      results.push(...await getCardsOfDirectProperty(plugin, owner, searchOptions, ctx));
+    }
+  }
+
+  return results;
+}
+
+// Collect cards from all direct properties (non-reserved DESCRIPTOR children) of rem.
+async function getCardsOfDirectProperties(
+  plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
+): Promise<SearchData[]> {
+  const children = await getCleanChildren(plugin, rem);
+  const results: SearchData[] = [];
+
+  for (const child of children) {
+    const type = await child.getType();
+    if (type !== RemType.DESCRIPTOR) continue;
+    // Skip meta descriptors not already filtered by getCleanChildren ("eigenschaften", "implements")
+    const name = await getRemText(plugin, child);
+    const baseName = name.includes(' > ') ? name.split(' > ').pop()!.trim() : name.trim();
+    if (RESERVED_PROPERTY_KEYWORDS.includes(baseName.toLowerCase())) continue;
+    if (ctx.excludedPropertyIds.has(child._id)) continue;
+    // Skip properties not in the root class's known set (excludes new properties added by descendants)
+    if (ctx.includedPropertyIds !== null && !ctx.includedPropertyIds.has(child._id)) continue;
+    results.push(...await getCardsOfDirectProperty(plugin, child, searchOptions, ctx));
+  }
+
+  return results;
+}
+
+// =============================================================================
+// Card Collection: Regular properties (DOCUMENT children)
+// =============================================================================
+
+// Collect cards from a single regular property rem, treating it as a full class:
+// its own cards, its sub-properties, and its descendants are all collected.
+// excludedPropertyIds is cleared for the recursive call — the UI checkboxes
+// only govern the top-level selected rem's properties, not nested ones.
+async function getCardsOfProperty(
+  plugin: RNPlugin, propRem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
+): Promise<SearchData[]> {
+  const propertyCtx: CardCollectionContext = {
+    ...ctx,
+    excludedPropertyIds: new Set(),
+    // Once inside a known property, allow all its sub-properties freely.
+    // The allowlist only gates which top-level properties to enter, not their internals.
+    includedPropertyIds: null,
+  };
+  return getCardsOfRem(
+    plugin,
+    propRem,
+    { ...searchOptions, includeThisRem: true, includeDescendants: true, includeAncestors: false },
+    new Set(),
+    propertyCtx
+  );
+}
+
+// Collect cards from all regular properties (non-excluded DOCUMENT children) of rem.
+async function getCardsOfProperties(
+  plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
+): Promise<SearchData[]> {
+  const children = await getCleanChildren(plugin, rem);
+  const results: SearchData[] = [];
+
+  for (const child of children) {
+    if (!await child.isDocument()) continue;
+    if (ctx.excludedPropertyIds.has(child._id)) continue;
+    // Skip properties not in the root class's known set (excludes new properties added by descendants)
+    if (ctx.includedPropertyIds !== null && !ctx.includedPropertyIds.has(child._id)) continue;
+    results.push(...await getCardsOfProperty(plugin, child, searchOptions, ctx));
+  }
+
+  return results;
+}
+
+// =============================================================================
+// Card Collection: Descendants
+// =============================================================================
+
+// Collect cards from all descendants of a class rem.
+// Uses getCleanChildrenAll which returns the union of:
+//   - structural children (C nested under B), and
+//   - rems that extend this class via an "extends" descriptor (D extends B)
+// This avoids the silent-drop bug of the old two-path approach where
+// resolveExtendsOwner() returning undefined would cause extends-based
+// descendants to be skipped entirely.
+async function getCardsOfDescendants(
+  plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
+): Promise<SearchData[]> {
+  const results: SearchData[] = [];
+
+  const allChildren = await getCleanChildrenAll(plugin, rem);
+
+  console.log(await getRemText(plugin, rem) + " children " + allChildren.length)
+
+  for (const child of allChildren) {
+    const type = await child.getType();
+    if (type === RemType.DESCRIPTOR) continue; // direct properties - handled by getCardsOfDirectProperties
+    if (await child.isDocument()) continue;     // regular properties - handled by getCardsOfProperties
+    if (ctx.processedRemIds.has(child._id)) continue;
+    results.push(...await getCardsOfRem(plugin, child, { ...searchOptions, includeThisRem: true }, ctx.excludedPropertyIds, ctx));
+  }
+
+  // Portals (raw children, not returned by getCleanChildrenAll)
+  if (searchOptions.includePortals) {
+    const rawChildren = await rem.getChildrenRem();
+    for (const child of rawChildren) {
+      if ((await child.getType()) !== RemType.PORTAL) continue;
+      const portalRems = await child.getPortalDirectlyIncludedRem();
+      for (const pr of portalRems) {
+        const freshRem = await plugin.rem.findOne(pr._id);
+        if (!freshRem || ctx.processedRemIds.has(freshRem._id)) continue;
+        results.push(...await getCardsOfRem(plugin, freshRem, { ...searchOptions, includeThisRem: true }, ctx.excludedPropertyIds, ctx));
       }
     }
   }
 
-  const flashcard = await isFlashcard(plugin, rem);
-  const disabled = await isDisabled(plugin, rem);
-  
-  // Only add flashcards from this rem if:
-  // - This is not the initial rem, OR
-  // - This is the initial rem AND includeThisRem is true
-  const shouldAddThisRem = !isInitialRem || searchOptions.includeThisRem;
-  
-  // DISABLED FLASHCARD: Add disabled flashcards (no card object)
-  if (flashcard && disabled && shouldAddThisRem) {
-    await addDisabledFlashcard(plugin, rem, cards, addedDisabledRemIds, cardPath + "->" + await getRemText(plugin, rem));
-  }
-  
-  // FLASHCARD: Add cards from this rem (only if not disabled)
-  if (flashcard && !disabled && shouldAddThisRem) {
-    await addFlashcard(plugin, rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-  }
-  
-  // FLASHCARD:
-  if(flashcard) {
-    // FLASHCARD: Handle References that appear in this QUESTION
-    const questionRefs = await rem.remsBeingReferenced();
-    for(const r of questionRefs) {
+  return results;
+}
 
-      // References to Flashcard in Question
-      if(searchOptions.includeReferencedCard) {
-        // An answer to another Flashcard is referenced in the answer of this Flashcard
-        if(await r.isCardItem()) {
-          await addFlashcard(plugin, await r.getParentRem() as Rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-        } else {
-          // A Question of another Flashcard is referenced in the answer of this Flashcard
-          await addFlashcard(plugin, r, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-        }
-      }
+// =============================================================================
+// Card Collection: Ancestors
+// =============================================================================
 
-      if(searchOptions.includeReferencedRem) {
-        cards = cards.concat(await getCardsOfRem( plugin,
-                                                    r,
-                                                    { ...searchOptions,
-                                                      includeAncestors: false,
-                                                      includeDescendants: false,
-                                                      referencedOnly: false,
-                                                      includeReferencedCard: false,
-                                                      includeReferencedRem: false,
-                                                      includeReferencingCard: false,
-                                                      includeReferencingRem: false,
-                                                      includeTaggedRem: false},
-                                                    processed,
-                                                    addedCardIds,
-                                                    addedDisabledRemIds,
-                                                    "->" + await getRemText(plugin, rem),
-                                                    false));
-        // If includeReferencedRem == true these should already be included?
-        if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
+// Collect cards from all ancestor class rems.
+// Each ancestor is processed with includeDescendants=false and includeAncestors=false
+// to avoid re-collecting the original rem's subtree, and includeThisRem=true so
+// the ancestor's own Eigenschaften/properties are always included.
+async function getCardsOfAncestors(
+  plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
+): Promise<SearchData[]> {
+  const results: SearchData[] = [];
+  const lineages = await getAncestorLineage(plugin, rem);
 
-          for(const ref of questionRefs) {
-            await addFlashcard(plugin, ref, cards, searchOptions, addedCardIds, cardPath);
-          }
-        }
-      }
-    }
-    
-    // FLASHCARD: Handle References that appear in ANSWERS
-    for(const c of childrenRem) {
-      const answerRefs = await c.remsBeingReferenced();
-      
-      for(const r of answerRefs) {
+  const seenIds = new Set<string>([rem._id]);
+  const ancestorOptions: SearchOptions = {
+    ...searchOptions,
+    includeThisRem: true,
+    includeDescendants: false,
+    includeAncestors: false,
+  };
 
-        // References to Flashcard in Answers
-        if(searchOptions.includeReferencedCard) {
-          // An answer to another Flashcard is referenced in the answer of this Flashcard
-          if(await r.isCardItem()) {
-            await addFlashcard(plugin, await r.getParentRem() as Rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-          } else {
-            // A Question of another Flashcard is referenced in the answer of this Flashcard
-            await addFlashcard(plugin, r, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-          }
-        }
-        
-        // References to Rem
-        if(searchOptions.includeReferencedRem) {
-          cards = cards.concat(await getCardsOfRem( plugin,
-                                                    r,
-                                                    { ...searchOptions,
-                                                      includeAncestors: false,
-                                                      includeDescendants: true,
-                                                      referencedOnly: false,
-                                                      includeReferencedCard: false,
-                                                      includeReferencedRem: false,
-                                                      includeReferencingCard: false,
-                                                      includeReferencingRem: false,
-                                                      includeTaggedRem: false},
-                                                    processed,
-                                                    addedCardIds,
-                                                    addedDisabledRemIds,
-                                                    "->" + await getRemText(plugin, rem),
-                                                    false));
-        }
-      }
-
-      // If includeReferencedRem == true these should already be included?
-      //if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
-        //for(const ref of answerRefs) {
-        //  await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-        //}
-      //} 
+  for (const lineage of lineages) {
+    for (const ancestor of lineage) {
+      if (seenIds.has(ancestor._id) || ctx.processedRemIds.has(ancestor._id)) continue;
+      seenIds.add(ancestor._id);
+      results.push(...await getCardsOfRem(plugin, ancestor, ancestorOptions, ctx.excludedPropertyIds, ctx));
     }
   }
 
-  // REM: This Rem is referenced in a FLASHCARD (e.g., questions where this rem appears as an answer)
-  if(searchOptions.includeReferencingCard) {
-    const childrenRef = await rem.remsReferencingThis();
-    for (const ref of childrenRef) {
-      // QUESTION:
-      if(await isFlashcard(plugin, ref)) {
-        await addFlashcard(plugin, ref, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-      }
+  return results;
+}
 
-      // ANSWER: Reference appears in ANSWER
-      if (await ref.isCardItem() || await ref.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) {
-        const question = await ref.getParentRem();
-        if (question) {
-          await addFlashcard(plugin, question, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-        }
-      }
+// =============================================================================
+// Card Collection: Orchestrator
+// =============================================================================
+
+// Collect all flashcards from a class rem according to search options and property exclusions.
+//
+// excludedPropertyIds: set of property rem IDs that are unchecked in the UI.
+//   Both direct properties and regular properties are skipped when their ID is in this set.
+//   For direct properties, the entire extension chain below the excluded property is also skipped.
+//
+// _ctx: internal â€” omit on top-level calls; passed through by recursive sub-functions.
+async function getCardsOfRem(
+  plugin: RNPlugin,
+  rem: Rem,
+  searchOptions: SearchOptions,
+  excludedPropertyIds: Set<string> = new Set(),
+  _ctx?: CardCollectionContext
+): Promise<SearchData[]> {
+  // Create shared context on the first (top-level) call; reuse on all recursive calls.
+  const ctx: CardCollectionContext = _ctx ?? {
+    addedCardIds: new Set(),
+    addedDisabledRemIds: new Set(),
+    excludedPropertyIds,
+    processedRemIds: new Set(),
+    includedPropertyIds: searchOptions.excludeNewProperties
+      ? await computeIncludedPropertyIds(plugin, rem)
+      : null,
+  };
+
+  // Cycle guard â€” each rem is processed at most once per top-level call.
+  if (ctx.processedRemIds.has(rem._id)) return [];
+  ctx.processedRemIds.add(rem._id);
+
+  const results: SearchData[] = [];
+
+  // THIS REM: Eigenschaften, direct properties, and regular properties.
+  // Skipped entirely when includeThisRem is false (only descendants/ancestors collected).
+  if (searchOptions.includeThisRem) {
+    if (searchOptions.includeEigenschaften) {
+      results.push(...await getCardsOfEigenschaften(plugin, rem, ctx));
     }
+    results.push(...await getCardsOfDirectProperties(plugin, rem, searchOptions, ctx));
+    results.push(...await getCardsOfProperties(plugin, rem, searchOptions, ctx));
   }
 
-  // TAGGED REM: Include flashcards that are tagged with this rem
+  // TAGGED REM: flashcards tagged with this rem
   if (searchOptions.includeTaggedRem) {
     const taggedRems = await rem.taggedRem();
     for (const taggedRem of taggedRems) {
-      // Check if the tagged rem is a flashcard
-      const taggedIsFlashcard = await isFlashcard(plugin, taggedRem);
-      const taggedIsDisabled = await isDisabled(plugin, taggedRem);
-      
-      // Add disabled flashcard
-      if (taggedIsFlashcard && taggedIsDisabled) {
-        await addDisabledFlashcard(plugin, taggedRem, cards, addedDisabledRemIds, cardPath + "->(tagged)" + await getRemText(plugin, taggedRem));
-      }
-      
-      // Add enabled flashcard
-      if (taggedIsFlashcard && !taggedIsDisabled) {
-        await addFlashcard(plugin, taggedRem, cards, searchOptions, addedCardIds, cardPath + "->(tagged)" + await getRemText(plugin, taggedRem));
+      if (await isFlashcard(plugin, taggedRem)) {
+        await collectFlashcardToCtx(plugin, taggedRem, results, ctx);
       }
     }
   }
 
-  // HIERARCHY: Handle portals if includePortals is true
-  if (searchOptions.includePortals) {
-    //const childrenRem = await getCleanChildren(plugin, rem);
-
-    for (const child of childrenRem) {
-      if (await child.getType() === RemType.PORTAL) {
-          const rems = await child.getPortalDirectlyIncludedRem();
-
-          //console.log("In Portal:");
-          for(const r of rems) {
-            //console.log(await getRemText(plugin, r))
-            // Using r instead of await plugin.rem.findOne(r._id) throws a runtime error
-            cards = cards.concat(await getCardsOfRem( plugin,
-                                                      await plugin.rem.findOne(r._id) as Rem,
-                                                      searchOptions,
-                                                      processed,
-                                                      addedCardIds,
-                                                      addedDisabledRemIds,
-                                                      "->" + await getRemText(plugin, rem),
-                                                      false)); // { ...searchOptions, invertedDirection: false }
-          }
-      }
-    }
+  // DESCENDANTS
+  if (searchOptions.includeDescendants) {
+    results.push(...await getCardsOfDescendants(plugin, rem, searchOptions, ctx));
   }
 
-  // HIERARCHY: Add option to include this.
+  // ANCESTORS
   if (searchOptions.includeAncestors) {
-    // Special Case: if current rem is a flashcard, also process its direct parent
-    if(flashcard) {
-      const parentRem = await rem.getParentRem();
-      if (parentRem) {
-        const ancestorCards = await getCardsOfRem(plugin,
-                                                  parentRem,
-                                                  {...searchOptions, includeDescendants: false},
-                                                  processed,
-                                                  addedCardIds,
-                                                  addedDisabledRemIds,
-                                                  "->" + await getRemText(plugin, rem),
-                                                  false);
-        cards = cards.concat(ancestorCards);
-      }
-    }
-
-    const lineages = await getAncestorLineage(plugin, rem);
-
-    // Build a set of all ancestor IDs to know which documents are in the lineage
-    const ancestorIds = new Set<string>();
-    for (const lineage of lineages) {
-      for (const ancestor of lineage) {
-        ancestorIds.add(ancestor._id);
-      }
-    }
-
-    for (const lineage of lineages) {
-      for (const ancestor of lineage) {
-        // Skip if this is the current rem itself
-        if (ancestor._id === rem._id) continue;
-        
-        //console.log("Go to Ancestor: " + await getRemText(plugin, ancestor));
-        
-        // 1. Check the ancestor rem itself for flashcards (no descendants)
-        const ancestorCards = await getCardsOfRem(plugin,
-                                                  ancestor,
-                                                  { ...searchOptions, includeAncestors: false, includeDescendants: false },
-                                                  processed,
-                                                  addedCardIds,
-                                                  addedDisabledRemIds,
-                                                  "->" + await getRemText(plugin, rem),
-                                                  false);
-        cards = cards.concat(ancestorCards);
-        
-        // 2. Check first-level children of ancestor for flashcards (structural children only, no references)
-        //    For "Properties"/"Eigenschaften" children, recurse fully
-        //    For document children, only recurse if they are in the ancestor lineage
-        const ancestorChildren = await getCleanChildrenOnly(plugin, ancestor);
-        for (const ancestorChild of ancestorChildren) {
-          // Skip if already processed or if this is the initial rem itself
-          if (processed.has(ancestorChild._id) || ancestorChild._id === rem._id) continue;
-          
-          const childName = await getRemText(plugin, ancestorChild);
-          const isDocument = await ancestorChild.isDocument();
-          
-          if (childName === "Properties" || childName === "Eigenschaften") {
-            // Fully recurse into Properties/Eigenschaften (structural only)
-            const propsCards = await getCardsOfRem(plugin,
-                                                   ancestorChild,
-                                                   { ...searchOptions, includeAncestors: false, includeDescendants: true, useStructuralChildrenOnly: true },
-                                                   processed,
-                                                   addedCardIds,
-                                                   addedDisabledRemIds,
-                                                   "->" + await getRemText(plugin, ancestor),
-                                                   false);
-            cards = cards.concat(propsCards);
-          } else if (isDocument && ancestorIds.has(ancestorChild._id)) {
-            // Only recurse into document children if they are in the ancestor lineage
-            const propsCards = await getCardsOfRem(plugin,
-                                                   ancestorChild,
-                                                   { ...searchOptions, includeAncestors: false, includeDescendants: true, useStructuralChildrenOnly: true },
-                                                   processed,
-                                                   addedCardIds,
-                                                   addedDisabledRemIds,
-                                                   "->" + await getRemText(plugin, ancestor),
-                                                   false);
-            cards = cards.concat(propsCards);
-          } else if (!isDocument) {
-            // Only check non-document first-level children for flashcards (no further recursion)
-            const childCards = await getCardsOfRem(plugin,
-                                                   ancestorChild,
-                                                   { ...searchOptions, includeAncestors: false, includeDescendants: false },
-                                                   processed,
-                                                   addedCardIds,
-                                                   addedDisabledRemIds,
-                                                   "->" + await getRemText(plugin, ancestor),
-                                                   false);
-            cards = cards.concat(childCards);
-          }
-          // If isDocument but NOT in ancestorIds, skip it entirely (e.g., RemB in the example)
-        }
-      }
-    }
+    results.push(...await getCardsOfAncestors(plugin, rem, searchOptions, ctx));
   }
 
-  // HIERARCHY: Recurse into descendants and referencing rems
-  for(const child of childrenRem) {
+  // TODO: includeReferencedCard, includeReferencingCard, includeReferencedRem, includeReferencingRem
+  // are not yet implemented in the new architecture.
 
-    // Properties
-    const cName = await getRemText(plugin, child);
-
-    // Only process Properties/Eigenschaften folder if:
-    // - includeThisRem is true AND this is the initial rem (we want this rem's properties), OR
-    // - includeDescendants is true (descendants includes everything), OR
-    // - this is not the initial rem (we're inside a recursive call, so process descendant's properties)
-    if((cName == "Properties" || cName == "Eigenschaften") && 
-       ((searchOptions.includeThisRem && isInitialRem) || searchOptions.includeDescendants || !isInitialRem)) {
-      cards = cards.concat(await getCardsOfRem( plugin,
-                                                child,
-                                                {...searchOptions, includeAncestors: false, includeDescendants: true},
-                                                processed,
-                                                addedCardIds,
-                                                addedDisabledRemIds,
-                                                "->" + await getRemText(plugin, rem),
-                                                false)); // { ...searchOptions, invertedDirection: false }
-    }
-
-    // Skip Properties/Eigenschaften here - they are handled above with special logic
-    if(searchOptions.includeDescendants && cName !== "Properties" && cName !== "Eigenschaften") { 
-      //console.log("Goto Child: " + await getRemText(plugin, child))
-      cards = cards.concat(await getCardsOfRem( plugin,
-                                                child,
-                                                searchOptions,
-                                                processed,
-                                                addedCardIds,
-                                                addedDisabledRemIds,
-                                                "->" + await getRemText(plugin, rem),
-                                                false));
-    }
-  }
-
-  // When "This Rem" is selected but not "Descendants", check first-level STRUCTURAL children
-  // - If a child is a flashcard, include it (no recursion)
-  // - If a child is a document (property of this rem), recurse into it using structural children only
-  if (isInitialRem && searchOptions.includeThisRem && !searchOptions.includeDescendants) {
-    const structuralChildren = await getCleanChildrenOnly(plugin, rem);
-    for (const structChild of structuralChildren) {
-      const childName = await getRemText(plugin, structChild);
-      // Skip Properties/Eigenschaften as they are already handled in the main loop
-      if (childName !== "Properties" && childName !== "Eigenschaften") {
-        const isChildDocument = await structChild.isDocument();
-        
-        if (isChildDocument) {
-          // Child is a document (property) - recurse into it with structural children only
-          cards = cards.concat(await getCardsOfRem( plugin,
-                                                    structChild,
-                                                    {...searchOptions, includeAncestors: false, includeDescendants: true, useStructuralChildrenOnly: true},
-                                                    processed,
-                                                    addedCardIds,
-                                                    addedDisabledRemIds,
-                                                    "->" + await getRemText(plugin, rem),
-                                                    false));
-        } else if (await isFlashcard(plugin, structChild)) {
-          // Child is a flashcard - include it directly (no recursion)
-          const childCards = await structChild.getCards();
-          for (const card of childCards) {
-            if (!addedCardIds.has(card._id)) {
-              addedCardIds.add(card._id);
-              cards.push({rem: structChild, card: card});
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return cards;
+  return results;
 }
 
 function getLastRatingStr(history: RepetitionStatus[] | undefined, count: number = 1): string[] {
@@ -1185,6 +1227,41 @@ async function questionsFromSearchData(plugin: RNPlugin, searchData: SearchData[
     return questions;
 }
 
+interface PropertyEntry {
+  id: string;
+  name: string;
+  isDirect: boolean; // true = descriptor child, false = document child
+  inheritedFrom?: string; // name of ancestor rem if inherited
+}
+
+const RESERVED_PROPERTY_KEYWORDS = ['extends', 'imports', 'implements', 'eigenschaften'];
+
+async function getPropertiesOfRem(plugin: RNPlugin, rem: Rem): Promise<PropertyEntry[]> {
+  // Use structural children only (getCleanChildren), NOT getCleanChildrenAll which includes rems
+  // that reference/extend this rem and would show up as false properties.
+  const children = await getCleanChildren(plugin, rem);
+  const entries: PropertyEntry[] = [];
+  for (const child of children) {
+    const [type, name, isDoc] = await Promise.all([child.getType(), getRemText(plugin, child), child.isDocument()]);
+    // getCleanChildren already filters specialNames/specialNameParts (including slot-qualified names).
+    // Only need to skip domain-specific reserved keywords here.
+    const baseName = name.includes(' > ') ? name.split(' > ').pop()!.trim() : name.trim();
+    const baseNormalized = baseName.toLowerCase();
+    if (type === RemType.DESCRIPTOR && RESERVED_PROPERTY_KEYWORDS.includes(baseNormalized)) continue;
+    // Direct property: descriptor that is NOT a reserved keyword
+    if (type === RemType.DESCRIPTOR) {
+      entries.push({ id: child._id, name, isDirect: true });
+      continue;
+    }
+    // Regular property: document child
+    if (isDoc) {
+      entries.push({ id: child._id, name, isDirect: false });
+    }
+    // Everything else (CONCEPT, PORTAL, etc.) is a descendant/child, not a property â€” skip
+  }
+  return entries;
+}
+
 function CustomQueueWidget() {
     const plugin = usePlugin();
 
@@ -1255,6 +1332,9 @@ function CustomQueueWidget() {
 
     //
     const [isBuildQueueExpanded, setIsBuildQueueExpanded] = useState<boolean>(false);
+    const [isBuildQueueAllowed, setIsBuildQueueAllowed] = useState<boolean>(false);
+    const [remProperties, setRemProperties] = useState<PropertyEntry[]>([]);
+    const [checkedPropertyIds, setCheckedPropertyIds] = useState<Set<string>>(new Set());
     const [searchOptions, setSearchOptions] = useState<SearchOptions>({ includeThisRem: true,
                                                                         includeAncestors: false,
                                                                         includeDescendants: true,
@@ -1270,8 +1350,9 @@ function CustomQueueWidget() {
                                                                         includeReferencedRem: false,
                                                                         includeReferencingRem: false,
                                                                         includeTaggedRem: true,
-                                                                        maximumNumberOfCards: 1000,
-                                                                        useStructuralChildrenOnly: false});
+                                                                        includeEigenschaften: true,
+                                                                        excludeNewProperties: false,
+                                                                        maximumNumberOfCards: 1000});
 
     const [isQueueExpanded, setIsQueueExpanded] = useState<boolean>(true);
     const [activeTab, setActiveTab] = useState<'build' | 'queue'>('build');
@@ -1358,8 +1439,83 @@ function CustomQueueWidget() {
         if(buildQueueRem) {
           const txt = await getRemText(plugin, buildQueueRem);
           setBuildQueueRemText(txt);
+
+          const type = await buildQueueRem.getType();
+          if (type === RemType.DESCRIPTOR || type === RemType.PORTAL) {
+            setIsBuildQueueAllowed(false);
+            setRemProperties([]);
+            setCheckedPropertyIds(new Set());
+          } else {
+            const flashcard = await isFlashcard(plugin, buildQueueRem);
+            const allowed = !flashcard;
+            setIsBuildQueueAllowed(allowed);
+            if (allowed) {
+              // Collect own properties
+              const ownProps = await getPropertiesOfRem(plugin, buildQueueRem);
+
+              // Collect inherited properties from ancestor lineage
+              const lineages = await getAncestorLineage(plugin, buildQueueRem);
+              const seenAncestorIds = new Set<string>();
+              seenAncestorIds.add(buildQueueRem._id);
+              const inheritedProps: PropertyEntry[] = [];
+              for (const lineage of lineages) {
+                for (const ancestor of lineage) {
+                  if (seenAncestorIds.has(ancestor._id)) continue;
+                  seenAncestorIds.add(ancestor._id);
+                  const ancestorName = await getRemText(plugin, ancestor);
+                  const props = await getPropertiesOfRem(plugin, ancestor);
+                  for (const p of props) {
+                    inheritedProps.push({ ...p, inheritedFrom: ancestorName });
+                  }
+                }
+              }
+
+              // Merge: own first, then inherited; de-duplicate by id (own takes priority)
+              const seenPropIds = new Set<string>(ownProps.map(p => p.id));
+              const merged: PropertyEntry[] = [...ownProps];
+              for (const p of inheritedProps) {
+                if (!seenPropIds.has(p.id)) {
+                  seenPropIds.add(p.id);
+                  merged.push(p);
+                }
+              }
+
+              // De-duplicate extends-overrides for document (regular) properties:
+              // If a more-derived property extends an ancestor property, hide the ancestor.
+              // This mirrors the logic in getProperties() from AbstractionAndInheritance/utils.
+              const candidateMap = new Map<string, PropertyEntry>(merged.map(p => [p.id, p]));
+              const referencedByOverride = new Set<string>();
+              await Promise.all(
+                merged.map(async (p) => {
+                  try {
+                    const rem = await plugin.rem.findOne(p.id);
+                    if (!rem) return;
+                    const parents = await getExtendsParents(plugin, rem);
+                    for (const par of parents) {
+                      if (candidateMap.has(par._id)) referencedByOverride.add(par._id);
+                    }
+                  } catch {}
+                })
+              );
+              const finalMerged = merged
+                .filter(p => !referencedByOverride.has(p.id))
+                .sort((a, b) => {
+                  if (a.isDirect !== b.isDirect) return a.isDirect ? -1 : 1;
+                  return a.name.localeCompare(b.name);
+                });
+
+              setRemProperties(finalMerged);
+              setCheckedPropertyIds(new Set(finalMerged.map(p => p.id)));
+            } else {
+              setRemProperties([]);
+              setCheckedPropertyIds(new Set());
+            }
+          }
         } else {
           setBuildQueueRemText("No Rem Selected");
+          setIsBuildQueueAllowed(false);
+          setRemProperties([]);
+          setCheckedPropertyIds(new Set());
         }
       };
       updateBuildQueueRemText();
@@ -1393,7 +1549,21 @@ function CustomQueueWidget() {
 
               //let fetchedCards: Card[] = [];
               let fetchedCards: SearchData[] = [];
-              fetchedCards = await getCardsOfRem(plugin, currentFocusedRem, searchOptions);
+              // Compute exclusion set from unchecked properties in the UI,
+              // expanded to include each excluded property's ancestors and descendants.
+              const uncheckedIds = remProperties.filter(p => !checkedPropertyIds.has(p.id)).map(p => p.id);
+              const excludedPropertyIds = new Set<string>(uncheckedIds);
+              for (const id of uncheckedIds) {
+                const propRem = await plugin.rem.findOne(id);
+                if (!propRem) continue;
+                const [ancestorIds, descendantIds] = await Promise.all([
+                  getAncestorIds(plugin, propRem),
+                  getDescendantIds(plugin, propRem),
+                ]);
+                for (const aid of ancestorIds) excludedPropertyIds.add(aid);
+                for (const did of descendantIds) excludedPropertyIds.add(did);
+              }
+              fetchedCards = await getCardsOfRem(plugin, currentFocusedRem, searchOptions, excludedPropertyIds);
 
               //console.log("fetchedCards: " + fetchedCards.length)
 
@@ -1414,7 +1584,7 @@ function CustomQueueWidget() {
                                                                                     includeReferencingCard: false,
                                                                                     includeReferencedRem: false,
                                                                                     includeReferencingRem: false,
-                                                                                    includeTaggedRem: false});
+                                                                                    includeTaggedRem: false}, excludedPropertyIds);
                 
                 // Create a Set of _ids from B for efficient lookup (filter out null cards)
                 const bIds = new Set(nonRefCards.filter(card => card.card !== null).map(card => card.card!._id));
@@ -1691,6 +1861,73 @@ function CustomQueueWidget() {
         {activeTab === 'build' && (
           <div style={{ marginTop: "10px" }}>
             <div>Rem: {buildQueueRemText}</div>
+
+                        {/* Eigenschaften + property filter toggles - always shown when a valid class rem is selected */}
+            {isBuildQueueAllowed && (
+              <div style={{ marginTop: "10px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
+                  <input
+                    type="checkbox"
+                    checked={searchOptions.includeEigenschaften}
+                    onChange={() => setSearchOptions({ ...searchOptions, includeEigenschaften: !searchOptions.includeEigenschaften })}
+                  />
+                  Eigenschaften
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", marginTop: "2px" }}>
+                  <input
+                    type="checkbox"
+                    checked={searchOptions.excludeNewProperties}
+                    onChange={() => setSearchOptions({ ...searchOptions, excludeNewProperties: !searchOptions.excludeNewProperties })}
+                  />
+                  Exclude new Properties
+                </label>
+              </div>
+            )}
+{/* Property list â€” only shown when a valid class rem is selected */}
+            {isBuildQueueAllowed && remProperties.length > 0 && (
+              <div style={{ marginTop: "10px" }}>
+                <h3 style={{ marginBottom: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <input
+                    type="checkbox"
+                    checked={remProperties.every(p => checkedPropertyIds.has(p.id))}
+                    ref={(el) => {
+                      if (el) el.indeterminate = remProperties.some(p => checkedPropertyIds.has(p.id)) && !remProperties.every(p => checkedPropertyIds.has(p.id));
+                    }}
+                    onChange={() => {
+                      const allChecked = remProperties.every(p => checkedPropertyIds.has(p.id));
+                      setCheckedPropertyIds(allChecked ? new Set() : new Set(remProperties.map(p => p.id)));
+                    }}
+                  />
+                  Properties
+                </h3>
+                {remProperties.map((prop) => (
+                  <label key={prop.id} style={{ display: "block", marginBottom: "2px", fontSize: "13px" }}>
+                    <input
+                      type="checkbox"
+                      checked={checkedPropertyIds.has(prop.id)}
+                      onChange={() => {
+                        setCheckedPropertyIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(prop.id)) next.delete(prop.id);
+                          else next.add(prop.id);
+                          return next;
+                        });
+                      }}
+                      style={{ marginRight: "5px" }}
+                    />
+                    {prop.name}
+                    <span style={{ marginLeft: "6px", fontSize: "11px", opacity: 0.6, fontStyle: "italic" }}>
+                      {prop.isDirect ? "direct" : "regular"}
+                    </span>
+                    {prop.inheritedFrom && (
+                      <span style={{ marginLeft: "6px", fontSize: "11px", opacity: 0.5 }}>
+                        [from {prop.inheritedFrom}]
+                      </span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
             
             {/* Hierarchy and Flashcard Filter side by side */}
             <div style={{ display: "flex", gap: "20px" }}>
@@ -1836,6 +2073,7 @@ function CustomQueueWidget() {
               onClick={async () => {await loadRemQueue(); setActiveTab('queue');}} 
               img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" 
               style={{ width: '100%', justifyContent: 'center' }}
+              active={isBuildQueueAllowed}
             />
             </div>
           </div>
@@ -1864,7 +2102,7 @@ function CustomQueueWidget() {
                           onClick={() => setIsDisabledTableExpanded(!isDisabledTableExpanded)} 
                           style={{ cursor: "pointer", fontWeight: "bold", marginBottom: "10px", display: "flex", alignItems: "center", gap: "8px" }}
                         >
-                          <span>{isDisabledTableExpanded ? '▼' : '►'}</span>
+                          <span>{isDisabledTableExpanded ? 'â–¼' : 'â–º'}</span>
                           <span>Disabled Cards ({cardsData.length})</span>
                         </div>
                         {isDisabledTableExpanded && (
@@ -1875,7 +2113,7 @@ function CustomQueueWidget() {
                                   <MyRemNoteButtonSmall text="#" onClick={() => {}} />
                                 </th>
                                 <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "70%" }}>
-                                  <MyRemNoteButtonSmall text={`Question ${sortColumn === 'text' ? (sortAscending ? '▲' : '▼') : ''}`} onClick={() => handleSort('text')} />
+                                  <MyRemNoteButtonSmall text={`Question ${sortColumn === 'text' ? (sortAscending ? 'â–²' : 'â–¼') : ''}`} onClick={() => handleSort('text')} />
                                 </th>
                                 <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", width: "25%" }}>
                                   <MyRemNoteButtonSmall text="Status" onClick={() => {}} />

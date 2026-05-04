@@ -1,4 +1,4 @@
-import { PowerupSlotCodeMap, usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn, AppEvents, BuiltInPowerupCodes, useTracker, CardData
+﻿import { PowerupSlotCodeMap, usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn, AppEvents, BuiltInPowerupCodes, useTracker, CardData
 } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 // import MyRemNoteButton from '../components/MyRemNoteButton';
@@ -10,12 +10,93 @@ export const specialNames = ["Collapse Tag Configure Options", "Hide Bullets", "
 
 export const specialNameParts = ["query:", "contains:"];
 
-export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem): Promise<Rem | undefined> {
+// =============================================================================
+// Per-run SDK memoization cache
+// =============================================================================
+// Each entry stores a Promise (not a resolved value) so that concurrent requests
+// for the same rem coalesce onto a single in-flight network call.
+// The cache is created once per loadRemQueue run inside getCardsOfRem and
+// discarded afterward, so there are no staleness concerns.
+
+export interface RemCache {
+  getChildrenRem:      Map<string, Promise<Rem[]>>;
+  getType:             Map<string, Promise<RemType>>;
+  getParentRem:        Map<string, Promise<Rem | null | undefined>>;
+  isDocument:          Map<string, Promise<boolean>>;
+  isSlot:              Map<string, Promise<boolean>>;
+  isCardItem:          Map<string, Promise<boolean>>;
+  getCards:            Map<string, Promise<Card[]>>;
+  remsReferencingThis: Map<string, Promise<Rem[]>>;
+  taggedRem:           Map<string, Promise<Rem[]>>;
+  getRemText:          Map<string, Promise<string>>; // key: `${id}:${extendedName ? 1 : 0}`
+}
+
+export function createRemCache(): RemCache {
+  return {
+    getChildrenRem:      new Map(),
+    getType:             new Map(),
+    getParentRem:        new Map(),
+    isDocument:          new Map(),
+    isSlot:              new Map(),
+    isCardItem:          new Map(),
+    getCards:            new Map(),
+    remsReferencingThis: new Map(),
+    taggedRem:           new Map(),
+    getRemText:          new Map(),
+  };
+}
+
+function cGetChildrenRem(rem: Rem, cache: RemCache): Promise<Rem[]> {
+  if (!cache.getChildrenRem.has(rem._id)) cache.getChildrenRem.set(rem._id, rem.getChildrenRem());
+  return cache.getChildrenRem.get(rem._id)!;
+}
+function cGetType(rem: Rem, cache: RemCache): Promise<RemType> {
+  if (!cache.getType.has(rem._id)) cache.getType.set(rem._id, rem.getType());
+  return cache.getType.get(rem._id)!;
+}
+function cGetParentRem(rem: Rem, cache: RemCache): Promise<Rem | null | undefined> {
+  if (!cache.getParentRem.has(rem._id)) cache.getParentRem.set(rem._id, rem.getParentRem());
+  return cache.getParentRem.get(rem._id)!;
+}
+function cIsDocument(rem: Rem, cache: RemCache): Promise<boolean> {
+  if (!cache.isDocument.has(rem._id)) cache.isDocument.set(rem._id, rem.isDocument());
+  return cache.isDocument.get(rem._id)!;
+}
+function cIsSlot(rem: Rem, cache: RemCache): Promise<boolean> {
+  if (!cache.isSlot.has(rem._id)) cache.isSlot.set(rem._id, rem.isSlot());
+  return cache.isSlot.get(rem._id)!;
+}
+function cIsCardItem(rem: Rem, cache: RemCache): Promise<boolean> {
+  if (!cache.isCardItem.has(rem._id)) cache.isCardItem.set(rem._id, rem.isCardItem());
+  return cache.isCardItem.get(rem._id)!;
+}
+function cGetCards(rem: Rem, cache: RemCache): Promise<Card[]> {
+  if (!cache.getCards.has(rem._id)) cache.getCards.set(rem._id, rem.getCards ? rem.getCards() : Promise.resolve([]));
+  return cache.getCards.get(rem._id)!;
+}
+function cRemsReferencingThis(rem: Rem, cache: RemCache): Promise<Rem[]> {
+  if (!cache.remsReferencingThis.has(rem._id)) cache.remsReferencingThis.set(rem._id, rem.remsReferencingThis());
+  return cache.remsReferencingThis.get(rem._id)!;
+}
+function cTaggedRem(rem: Rem, cache: RemCache): Promise<Rem[]> {
+  if (!cache.taggedRem.has(rem._id)) cache.taggedRem.set(rem._id, rem.taggedRem());
+  return cache.taggedRem.get(rem._id)!;
+}
+function cGetRemText(plugin: RNPlugin, rem: Rem, cache: RemCache, extendedName = false): Promise<string> {
+  const key = `${rem._id}:${extendedName ? 1 : 0}`;
+  if (!cache.getRemText.has(key)) cache.getRemText.set(key, getRemText(plugin, rem, extendedName));
+  return cache.getRemText.get(key)!;
+}
+
+export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Rem | undefined> {
   try {
-    const children = await rem.getChildrenRem();
+    const children = cache ? await cGetChildrenRem(rem, cache) : await rem.getChildrenRem();
     for (const child of children) {
       try {
-        const [t, name] = await Promise.all([child.getType(), getRemText(plugin, child)]);
+        const [t, name] = await Promise.all([
+          cache ? cGetType(child, cache) : child.getType(),
+          cache ? cGetRemText(plugin, child, cache) : getRemText(plugin, child),
+        ]);
         if (t === RemType.DESCRIPTOR && name.trim().toLowerCase() === "extends") {
           return child;
         }
@@ -29,12 +110,12 @@ export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem): Promise<
 // for each direct DESCRIPTOR or DOCUMENT child P of rem, includes P itself
 // plus all IDs in P's ancestor and descendant property-hierarchy chains.
 // Used to filter out "new" properties introduced by descendants.
-async function computeIncludedPropertyIds(plugin: RNPlugin, rem: Rem): Promise<Set<string>> {
+async function computeIncludedPropertyIds(plugin: RNPlugin, rem: Rem, cache: RemCache): Promise<Set<string>> {
   const ids = new Set<string>();
 
   // Collect rem itself plus all its ancestor classes so that properties from
   // any class in the hierarchy are included in the allowlist.
-  const lineages = await getAncestorLineage(plugin, rem);
+  const lineages = await getAncestorLineage(plugin, rem, cache);
   const allClassRems = new Map<string, Rem>();
   allClassRems.set(rem._id, rem);
   for (const lineage of lineages) {
@@ -46,12 +127,12 @@ async function computeIncludedPropertyIds(plugin: RNPlugin, rem: Rem): Promise<S
   // For every class in the hierarchy, collect all its properties plus their
   // property-hierarchy ancestors and descendants into the allowlist.
   await Promise.all(Array.from(allClassRems.values()).map(async (classRem) => {
-    const children = await getCleanChildren(plugin, classRem);
+    const children = await getCleanChildren(plugin, classRem, cache);
     await Promise.all(children.map(async (child) => {
       ids.add(child._id);
       const [ancestorIds, descendantIds] = await Promise.all([
-        getAncestorIds(plugin, child),
-        getDescendantIds(plugin, child),
+        getAncestorIds(plugin, child, cache),
+        getDescendantIds(plugin, child, new Set([child._id]), cache),
       ]);
       for (const id of ancestorIds) ids.add(id);
       for (const id of descendantIds) ids.add(id);
@@ -62,12 +143,12 @@ async function computeIncludedPropertyIds(plugin: RNPlugin, rem: Rem): Promise<S
 }
 
 // Returns the parent Rems referenced under the "extends" descriptor child of `rem`.
-export async function getExtendsParents(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
-  const ext = await getExtendsDescriptor(plugin, rem);
+export async function getExtendsParents(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Rem[]> {
+  const ext = await getExtendsDescriptor(plugin, rem, cache);
   if (!ext) return [];
   const resultMap = new Map<string, Rem>();
   try {
-    const extChildren = await ext.getChildrenRem();
+    const extChildren = cache ? await cGetChildrenRem(ext, cache) : await ext.getChildrenRem();
     for (const c of extChildren) {
       try {
         const refs = await c.remsBeingReferenced();
@@ -237,14 +318,14 @@ export async function getRemText(plugin: RNPlugin, rem: Rem | undefined, extente
 }
 
 // -> AbstractionAndInheritance
-async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
-  const childrenRems = await rem.getChildrenRem();
+async function getCleanChildren(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Rem[]> {
+  const childrenRems = cache ? await cGetChildrenRem(rem, cache) : await rem.getChildrenRem();
   const cleanChildren: Rem[] = [];
 
   for (const childRem of childrenRems) {
     const [text, type] = await Promise.all([
-      getRemText(plugin, childRem),
-      childRem.getType(),
+      cache ? cGetRemText(plugin, childRem, cache) : getRemText(plugin, childRem),
+      cache ? cGetType(childRem, cache) : childRem.getType(),
     ]);
     const baseName = text.includes(' > ') ? text.split(' > ').pop()!.trim() : text.trim();
     const normalized = baseName.toLowerCase();
@@ -264,7 +345,8 @@ async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
 
 async function resolveExtendsOwner(
   plugin: RNPlugin,
-  referencingRem: Rem
+  referencingRem: Rem,
+  cache?: RemCache
 ): Promise<Rem | undefined> {
   const visited = new Set<string>();
   let current: Rem | undefined = referencingRem;
@@ -275,11 +357,13 @@ async function resolveExtendsOwner(
     }
     visited.add(current._id);
 
-    const type = await current.getType();
-    const parent = await current.getParentRem();
+    const type = cache ? await cGetType(current, cache) : await current.getType();
+    const parent: Rem | null | undefined = cache ? await cGetParentRem(current, cache) : await current.getParentRem();
 
     if (type === RemType.DESCRIPTOR) {
-      const name = (await getRemText(plugin, current)).trim().toLowerCase();
+      const name = cache
+        ? (await cGetRemText(plugin, current, cache)).trim().toLowerCase()
+        : (await getRemText(plugin, current)).trim().toLowerCase();
       if (name === "extends") {
         return parent ?? undefined;
       }
@@ -292,15 +376,15 @@ async function resolveExtendsOwner(
 }
 
 // -> AbstractionAndInheritance
-export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Rem[]> {
   const [childrenRems, referencingRems] = await Promise.all([
-    rem.getChildrenRem(),
-    rem.remsReferencingThis(),
+    cache ? cGetChildrenRem(rem, cache) : rem.getChildrenRem(),
+    cache ? cRemsReferencingThis(rem, cache) : rem.remsReferencingThis(),
   ]);
 
   const normalizedReferencing: Rem[] = [];
   for (const ref of referencingRems) {
-    const owner = await resolveExtendsOwner(plugin, ref);
+    const owner = await resolveExtendsOwner(plugin, ref, cache);
     if (owner && owner._id !== rem._id) {
       normalizedReferencing.push(owner);
       continue;
@@ -319,8 +403,8 @@ export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<R
   const uniqueRems = Array.from(uniqueRemsMap.values());
 
   const [texts, types] = await Promise.all([
-    Promise.all(uniqueRems.map((r) => getRemText(plugin, r))),
-    Promise.all(uniqueRems.map((r) => r.getType())),
+    Promise.all(uniqueRems.map((r) => cache ? cGetRemText(plugin, r, cache) : getRemText(plugin, r))),
+    Promise.all(uniqueRems.map((r) => cache ? cGetType(r, cache) : r.getType())),
   ]);
 
   const cleanRems: Rem[] = [];
@@ -375,14 +459,14 @@ export async function getCleanChildrenOnly(plugin: RNPlugin, rem: Rem): Promise<
 }
 
 // -> AbstractionAndInheritance
-export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<Rem[][]> {
-  const lineages = await findPaths(plugin, rem, [rem]);
+export async function getAncestorLineage(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Rem[][]> {
+  const lineages = await findPaths(plugin, rem, [rem], cache);
   return lineages;
 }
 
 // Returns the IDs of all ancestor classes of rem (excludes rem itself).
-export async function getAncestorIds(plugin: RNPlugin, rem: Rem): Promise<Set<string>> {
-  const lineages = await getAncestorLineage(plugin, rem);
+export async function getAncestorIds(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Set<string>> {
+  const lineages = await getAncestorLineage(plugin, rem, cache);
   const ids = new Set<string>();
   for (const lineage of lineages) {
     for (const ancestor of lineage) {
@@ -398,20 +482,22 @@ export async function getAncestorIds(plugin: RNPlugin, rem: Rem): Promise<Set<st
 export async function getDescendantIds(
   plugin: RNPlugin,
   rem: Rem,
-  visited: Set<string> = new Set([rem._id])
+  visited: Set<string> = new Set([rem._id]),
+  cache?: RemCache
 ): Promise<Set<string>> {
   const ids = new Set<string>();
-  const children = await getCleanChildrenAll(plugin, rem);
+  const children = await getCleanChildrenAll(plugin, rem, cache);
   for (const child of children) {
     if (visited.has(child._id)) continue;
-    const type = await child.getType();
+    const type = cache ? await cGetType(child, cache) : await child.getType();
     // Skip structural sub-properties of this rem only (not extends-based descendants
     // that happen to be descriptors or documents belonging to another class).
-    const parent = await child.getParentRem();
+    const parent = cache ? await cGetParentRem(child, cache) : await child.getParentRem();
     const isDirectChild = !parent || parent._id === rem._id;
     if (type === RemType.DESCRIPTOR && isDirectChild) continue;
-    if (await child.isDocument() && isDirectChild) continue;
-    if (await isFlashcard(plugin, child)) {
+    const childIsDoc = cache ? await cIsDocument(child, cache) : await child.isDocument();
+    if (childIsDoc && isDirectChild) continue;
+    if (await isFlashcard(plugin, child, cache)) {
       // Leaf node — add to exclusion set but don't recurse into it.
       visited.add(child._id);
       ids.add(child._id);
@@ -419,14 +505,14 @@ export async function getDescendantIds(
     }
     visited.add(child._id);
     ids.add(child._id);
-    const childDescendants = await getDescendantIds(plugin, child, visited);
+    const childDescendants = await getDescendantIds(plugin, child, visited, cache);
     for (const did of childDescendants) ids.add(did);
   }
   return ids;
 }
 
-async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]): Promise<Rem[][]> {
-  const parents = (await getParentClass(plugin, currentRem)) || [];
+async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[], cache?: RemCache): Promise<Rem[][]> {
+  const parents = (await getParentClass(plugin, currentRem, cache)) || [];
 
   if (parents.length === 1 && parents[0]._id === currentRem._id) {
     return [currentPath];
@@ -434,7 +520,7 @@ async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]):
     const allPaths: Rem[][] = [];
     for (const parent of parents) {
       if (!currentPath.some(r => r._id === parent._id)) {
-        const parentPaths = await findPaths(plugin, parent, [...currentPath, parent]);
+        const parentPaths = await findPaths(plugin, parent, [...currentPath, parent], cache);
         allPaths.push(...parentPaths);
       }
     }
@@ -442,13 +528,13 @@ async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]):
   }
 }
 
-export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+export async function getParentClass(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Rem[]> {
   if (!rem) return [];
 
   const [isDocument, directParent, extendsParents] = await Promise.all([
-    rem.isDocument(),
-    rem.getParentRem(),
-    getExtendsParents(plugin, rem),
+    cache ? cIsDocument(rem, cache) : rem.isDocument(),
+    cache ? cGetParentRem(rem, cache) : rem.getParentRem(),
+    getExtendsParents(plugin, rem, cache),
   ]);
 
   // Property (document): inherits via extends, otherwise defines a new type
@@ -690,15 +776,15 @@ function formatMilliseconds(ms : number, abs = false): string {
   return (isNegative && !abs ? "-" : "") + value + " " + unit + plural;
 }
 
-async function isFlashcard(plugin: RNPlugin, rem: Rem): Promise <boolean> {
+async function isFlashcard(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise <boolean> {
 
-  if((await rem.getCards()).length > 0)
-    return true;
+  const cards = cache ? await cGetCards(rem, cache) : (rem.getCards ? await rem.getCards() : []);
+  if (cards.length > 0) return true;
 
-  const children = await getCleanChildren(plugin, rem);
+  const children = await getCleanChildren(plugin, rem, cache);
 
   for(const c of children) {
-    if(await c.isCardItem())
+    if(cache ? await cIsCardItem(c, cache) : await c.isCardItem())
       return true;
   }
 
@@ -808,13 +894,14 @@ interface CardCollectionContext {
   excludedPropertyIds: Set<string>; // unchecked property IDs from the UI
   processedRemIds: Set<string>;     // cycle / revisit guard
   includedPropertyIds: Set<string> | null; // null = no filter; non-null = allowlist of root class property IDs (+ their property-hierarchy ancestors/descendants)
+  cache: RemCache;                  // per-run SDK call memoization
 }
 
 // Add all cards from a rem (known to be a flashcard) to results, using ctx for dedup.
 async function collectFlashcardToCtx(
   plugin: RNPlugin, rem: Rem, results: SearchData[], ctx: CardCollectionContext
 ): Promise<void> {
-  const remCards = rem.getCards ? await rem.getCards() : [];
+  const remCards = await cGetCards(rem, ctx.cache);
   if (remCards.length > 0) {
     for (const card of remCards) {
       if (!ctx.addedCardIds.has(card._id)) {
@@ -843,11 +930,11 @@ async function getAllFlashcardsInSubtree(
   if (ctx.processedRemIds.has(rem._id)) return;
   ctx.processedRemIds.add(rem._id);
 
-  if (await isFlashcard(plugin, rem)) {
+  if (await isFlashcard(plugin, rem, ctx.cache)) {
     await collectFlashcardToCtx(plugin, rem, results, ctx);
   }
 
-  const children = await rem.getChildrenRem();
+  const children = await cGetChildrenRem(rem, ctx.cache);
   for (const child of children) {
     await getAllFlashcardsInSubtree(plugin, child, results, ctx);
   }
@@ -858,11 +945,11 @@ async function getCardsOfEigenschaften(
   plugin: RNPlugin, rem: Rem, ctx: CardCollectionContext
 ): Promise<SearchData[]> {
   const results: SearchData[] = [];
-  const rawChildren = await rem.getChildrenRem();
+  const rawChildren = await cGetChildrenRem(rem, ctx.cache);
   for (const child of rawChildren) {
-    const type = await child.getType();
+    const type = await cGetType(child, ctx.cache);
     if (type !== RemType.DESCRIPTOR) continue;
-    const name = await getRemText(plugin, child);
+    const name = await cGetRemText(plugin, child, ctx.cache);
     const baseName = name.includes(' > ') ? name.split(' > ').pop()!.trim() : name.trim();
     const baseNorm = baseName.toLowerCase();
     if (baseNorm === 'eigenschaften' || baseNorm === 'properties') {
@@ -889,19 +976,19 @@ async function getCardsOfDirectProperty(
   const results: SearchData[] = [];
 
   // Direct properties are typically flashcards â€” collect their cards.
-  if (await isFlashcard(plugin, propRem)) {
+  if (await isFlashcard(plugin, propRem, ctx.cache)) {
     await collectFlashcardToCtx(plugin, propRem, results, ctx);
   }
 
   // Follow the extension chain: find all rems that extend this property via "extends".
   if (searchOptions.includeDescendants) {
-    const referencingRems = await propRem.remsReferencingThis();
+    const referencingRems = await cRemsReferencingThis(propRem, ctx.cache);
     for (const ref of referencingRems) {
-      const owner = await resolveExtendsOwner(plugin, ref);
+      const owner = await resolveExtendsOwner(plugin, ref, ctx.cache);
       if (!owner || owner._id === propRem._id) continue;
       // Only follow DESCRIPTOR owners â€” those are direct property extensions.
       // Non-DESCRIPTOR owners are class descendants, handled by getCardsOfDescendants.
-      if ((await owner.getType()) !== RemType.DESCRIPTOR) continue;
+      if ((await cGetType(owner, ctx.cache)) !== RemType.DESCRIPTOR) continue;
       if (ctx.excludedPropertyIds.has(owner._id)) continue;
       // Skip owners not in the root class's known property set (prevents new-property leakage via extension chain)
       if (ctx.includedPropertyIds !== null && !ctx.includedPropertyIds.has(owner._id)) continue;
@@ -916,14 +1003,14 @@ async function getCardsOfDirectProperty(
 async function getCardsOfDirectProperties(
   plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
 ): Promise<SearchData[]> {
-  const children = await getCleanChildren(plugin, rem);
+  const children = await getCleanChildren(plugin, rem, ctx.cache);
   const results: SearchData[] = [];
 
   for (const child of children) {
-    const type = await child.getType();
+    const type = await cGetType(child, ctx.cache);
     if (type !== RemType.DESCRIPTOR) continue;
     // Skip meta descriptors not already filtered by getCleanChildren ("eigenschaften", "implements")
-    const name = await getRemText(plugin, child);
+    const name = await cGetRemText(plugin, child, ctx.cache);
     const baseName = name.includes(' > ') ? name.split(' > ').pop()!.trim() : name.trim();
     if (RESERVED_PROPERTY_KEYWORDS.includes(baseName.toLowerCase())) continue;
     if (ctx.excludedPropertyIds.has(child._id)) continue;
@@ -966,11 +1053,11 @@ async function getCardsOfProperty(
 async function getCardsOfProperties(
   plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
 ): Promise<SearchData[]> {
-  const children = await getCleanChildren(plugin, rem);
+  const children = await getCleanChildren(plugin, rem, ctx.cache);
   const results: SearchData[] = [];
 
   for (const child of children) {
-    if (!await child.isDocument()) continue;
+    if (!await cIsDocument(child, ctx.cache)) continue;
     if (ctx.excludedPropertyIds.has(child._id)) continue;
     // Skip properties not in the root class's known set (excludes new properties added by descendants)
     if (ctx.includedPropertyIds !== null && !ctx.includedPropertyIds.has(child._id)) continue;
@@ -996,12 +1083,12 @@ async function getCardsOfDescendants(
 ): Promise<SearchData[]> {
   const results: SearchData[] = [];
 
-  const allChildren = await getCleanChildrenAll(plugin, rem);
+  const allChildren = await getCleanChildrenAll(plugin, rem, ctx.cache);
 
-  console.log(await getRemText(plugin, rem) + " children " + allChildren.length)
+  console.log(await cGetRemText(plugin, rem, ctx.cache) + " children " + allChildren.length)
 
   for (const child of allChildren) {
-    const type = await child.getType();
+    const type = await cGetType(child, ctx.cache);
     if (type === RemType.DESCRIPTOR) continue; // direct properties - handled by getCardsOfDirectProperties
     if (await child.isDocument()) continue;     // regular properties - handled by getCardsOfProperties
     if (ctx.processedRemIds.has(child._id)) continue;
@@ -1010,9 +1097,9 @@ async function getCardsOfDescendants(
 
   // Portals (raw children, not returned by getCleanChildrenAll)
   if (searchOptions.includePortals) {
-    const rawChildren = await rem.getChildrenRem();
+    const rawChildren = await cGetChildrenRem(rem, ctx.cache);
     for (const child of rawChildren) {
-      if ((await child.getType()) !== RemType.PORTAL) continue;
+      if ((await cGetType(child, ctx.cache)) !== RemType.PORTAL) continue;
       const portalRems = await child.getPortalDirectlyIncludedRem();
       for (const pr of portalRems) {
         const freshRem = await plugin.rem.findOne(pr._id);
@@ -1037,7 +1124,7 @@ async function getCardsOfAncestors(
   plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
 ): Promise<SearchData[]> {
   const results: SearchData[] = [];
-  const lineages = await getAncestorLineage(plugin, rem);
+  const lineages = await getAncestorLineage(plugin, rem, ctx.cache);
 
   const seenIds = new Set<string>([rem._id]);
   const ancestorOptions: SearchOptions = {
@@ -1077,15 +1164,23 @@ async function getCardsOfRem(
   _ctx?: CardCollectionContext
 ): Promise<SearchData[]> {
   // Create shared context on the first (top-level) call; reuse on all recursive calls.
-  const ctx: CardCollectionContext = _ctx ?? {
-    addedCardIds: new Set(),
-    addedDisabledRemIds: new Set(),
-    excludedPropertyIds,
-    processedRemIds: new Set(),
-    includedPropertyIds: searchOptions.excludeNewProperties
-      ? await computeIncludedPropertyIds(plugin, rem)
-      : null,
-  };
+  let ctx: CardCollectionContext;
+  if (_ctx) {
+    ctx = _ctx;
+  } else {
+    const cache = createRemCache();
+    const includedPropertyIds = searchOptions.excludeNewProperties
+      ? await computeIncludedPropertyIds(plugin, rem, cache)
+      : null;
+    ctx = {
+      addedCardIds: new Set(),
+      addedDisabledRemIds: new Set(),
+      excludedPropertyIds,
+      processedRemIds: new Set(),
+      includedPropertyIds,
+      cache,
+    };
+  }
 
   // Cycle guard â€” each rem is processed at most once per top-level call.
   if (ctx.processedRemIds.has(rem._id)) return [];
@@ -1105,9 +1200,9 @@ async function getCardsOfRem(
 
   // TAGGED REM: flashcards tagged with this rem
   if (searchOptions.includeTaggedRem) {
-    const taggedRems = await rem.taggedRem();
+    const taggedRems = await cTaggedRem(rem, ctx.cache);
     for (const taggedRem of taggedRems) {
-      if (await isFlashcard(plugin, taggedRem)) {
+      if (await isFlashcard(plugin, taggedRem, ctx.cache)) {
         await collectFlashcardToCtx(plugin, taggedRem, results, ctx);
       }
     }

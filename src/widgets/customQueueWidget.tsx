@@ -764,7 +764,6 @@ interface SearchOptions {
   referencedOnly: boolean,
   ratingOnly: boolean,
   ratingFilter: QueueInteractionScore, // 0 Skip, 1 Forgot, ..., 4 Easily Recalled
-  includePortals: boolean,
   //invertedDirection: boolean, // Inverted mean up. Instead of collecting flashcards from descendants
   includeReferencedCard: boolean,
   includeReferencingCard: boolean,
@@ -1048,23 +1047,10 @@ async function getCardsOfDescendants(
   for (const child of allChildren) {
     const type = await cGetType(child, ctx.cache);
     if (type === RemType.DESCRIPTOR) continue; // direct properties - handled by getCardsOfDirectProperties
+    if (type === RemType.PORTAL) continue;      // portals and their children are skipped
     if (await child.isDocument()) continue;     // regular properties - handled by getCardsOfProperties
     if (ctx.processedRemIds.has(child._id)) continue;
     results.push(...await getCardsOfRem(plugin, child, { ...searchOptions, includeThisRem: true }, ctx.excludedPropertyIds, ctx));
-  }
-
-  // Portals (raw children, not returned by getCleanChildrenAll)
-  if (searchOptions.includePortals) {
-    const rawChildren = await cGetChildrenRem(rem, ctx.cache);
-    for (const child of rawChildren) {
-      if ((await cGetType(child, ctx.cache)) !== RemType.PORTAL) continue;
-      const portalRems = await child.getPortalDirectlyIncludedRem();
-      for (const pr of portalRems) {
-        const freshRem = await plugin.rem.findOne(pr._id);
-        if (!freshRem || ctx.processedRemIds.has(freshRem._id)) continue;
-        results.push(...await getCardsOfRem(plugin, freshRem, { ...searchOptions, includeThisRem: true }, ctx.excludedPropertyIds, ctx));
-      }
-    }
   }
 
   return results;
@@ -1394,7 +1380,6 @@ function CustomQueueWidget() {
                                                                         referencedOnly: false,
                                                                         ratingOnly: false,
                                                                         ratingFilter: QueueInteractionScore.AGAIN,
-                                                                        includePortals: false,
                                                                         //invertedDirection: false,
                                                                         includeReferencedCard: false,
                                                                         includeReferencingCard: false,
@@ -2061,15 +2046,6 @@ function CustomQueueWidget() {
                   />
                   Descendants
                 </label>
-                <label style={{ display: "block" }} title='Include Flashcards from inside Portals.'>
-                  <input 
-                    type="checkbox" 
-                    checked={searchOptions?.includePortals} 
-                    onChange={(e) => setSearchOptions({ ...searchOptions, includePortals: !searchOptions.includePortals })} 
-                    style={{ marginRight: '5px' }}
-                  />
-                  Include Portals
-                </label>
               </div>
               
               {/* Card Properties group */}
@@ -2083,15 +2059,6 @@ function CustomQueueWidget() {
                     style={{ marginRight: '5px' }}
                   />
                   Due
-                </label>
-                <label style={{ display: "block" }} title='Only add Flashcards that are Disabled.'>
-                  <input 
-                    type="checkbox" 
-                    checked={searchOptions?.disabledOnly} 
-                    onChange={(e) => setSearchOptions({ ...searchOptions, disabledOnly: !searchOptions.disabledOnly })} 
-                    style={{ marginRight: '5px' }}
-                  />
-                  Disabled
                 </label>
                 <label style={{ display: "block" }} title='Only add Flashcards that are a Reference.'>
                   <input 
@@ -2114,6 +2081,15 @@ function CustomQueueWidget() {
                     <input type="radio" name="Rating" id="Rating_2" value="Rating_2" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.HARD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Partially recalled")} />
                     <input type="radio" name="Rating" id="Rating_3" value="Rating_3" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.GOOD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Recalled with effort")} />
                     <input type="radio" name="Rating" id="Rating_4" value="Rating_4" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.EASY})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Easily recalled")} />
+                </label>
+                <label style={{ display: "block" }} title='Only add Flashcards that are Disabled.'>
+                  <input 
+                    type="checkbox" 
+                    checked={searchOptions?.disabledOnly} 
+                    onChange={(e) => setSearchOptions({ ...searchOptions, disabledOnly: !searchOptions.disabledOnly })} 
+                    style={{ marginRight: '5px' }}
+                  />
+                  Disabled
                 </label>
               </div>
             </div>

@@ -757,7 +757,6 @@ async function isFlashcard(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promis
 
 interface SearchOptions {
   includeThisRem: boolean,
-  includeAncestors: boolean,
   includeDescendants: boolean,
   dueOnly: boolean,
   disabledOnly: boolean,
@@ -1002,7 +1001,7 @@ async function getCardsOfProperty(
   return getCardsOfRem(
     plugin,
     propRem,
-    { ...searchOptions, includeThisRem: true, includeDescendants: true, includeAncestors: false },
+    { ...searchOptions, includeThisRem: true, includeDescendants: true },
     new Set(),
     propertyCtx
   );
@@ -1051,39 +1050,6 @@ async function getCardsOfDescendants(
     if (await child.isDocument()) continue;     // regular properties - handled by getCardsOfProperties
     if (ctx.processedRemIds.has(child._id)) continue;
     results.push(...await getCardsOfRem(plugin, child, { ...searchOptions, includeThisRem: true }, ctx.excludedPropertyIds, ctx));
-  }
-
-  return results;
-}
-
-// =============================================================================
-// Card Collection: Ancestors
-// =============================================================================
-
-// Collect cards from all ancestor class rems.
-// Each ancestor is processed with includeDescendants=false and includeAncestors=false
-// to avoid re-collecting the original rem's subtree, and includeThisRem=true so
-// the ancestor's own Eigenschaften/properties are always included.
-async function getCardsOfAncestors(
-  plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
-): Promise<SearchData[]> {
-  const results: SearchData[] = [];
-  const lineages = await getAncestorLineage(plugin, rem, ctx.cache);
-
-  const seenIds = new Set<string>([rem._id]);
-  const ancestorOptions: SearchOptions = {
-    ...searchOptions,
-    includeThisRem: true,
-    includeDescendants: false,
-    includeAncestors: false,
-  };
-
-  for (const lineage of lineages) {
-    for (const ancestor of lineage) {
-      if (seenIds.has(ancestor._id) || ctx.processedRemIds.has(ancestor._id)) continue;
-      seenIds.add(ancestor._id);
-      results.push(...await getCardsOfRem(plugin, ancestor, ancestorOptions, ctx.excludedPropertyIds, ctx));
-    }
   }
 
   return results;
@@ -1153,11 +1119,6 @@ async function getCardsOfRem(
   // DESCENDANTS
   if (searchOptions.includeDescendants) {
     results.push(...await getCardsOfDescendants(plugin, rem, searchOptions, ctx));
-  }
-
-  // ANCESTORS
-  if (searchOptions.includeAncestors) {
-    results.push(...await getCardsOfAncestors(plugin, rem, searchOptions, ctx));
   }
 
   // TODO: includeReferencedCard, includeReferencingCard, includeReferencedRem, includeReferencingRem
@@ -1373,7 +1334,6 @@ function CustomQueueWidget() {
     const [remProperties, setRemProperties] = useState<PropertyEntry[]>([]);
     const [checkedPropertyIds, setCheckedPropertyIds] = useState<Set<string>>(new Set());
     const [searchOptions, setSearchOptions] = useState<SearchOptions>({ includeThisRem: true,
-                                                                        includeAncestors: false,
                                                                         includeDescendants: true,
                                                                         dueOnly: false,
                                                                         disabledOnly: false,
@@ -2027,15 +1987,6 @@ function CustomQueueWidget() {
                     style={{ marginRight: '5px' }}
                   />
                   This Rem
-                </label>
-                <label style={{ display: "block" }} title='Include flashcards from ancestor Rems (and their first-level children, Properties/Eigenschaften, and documents).'>
-                  <input 
-                    type="checkbox" 
-                    checked={searchOptions?.includeAncestors} 
-                    onChange={(e) => setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors })} 
-                    style={{ marginRight: '5px' }}
-                  />
-                  Ancestors
                 </label>
                 <label style={{ display: "block" }} title='Include flashcards from all descendant Rems.'>
                   <input 

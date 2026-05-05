@@ -715,7 +715,10 @@ export function MyRemNoteQueue({
   const handleAnswer = async (score: QueueInteractionScore) => {
     if (currentCardData?.card) {
       try {
-        await currentCardData.card.updateCardRepetitionStatus(score);
+        const freshCard = await plugin.card.findOne(currentCardData.card._id);
+        if (freshCard) {
+          await freshCard.updateCardRepetitionStatus(score);
+        }
         // Trigger refresh of table data to show new rating
         setTableRefreshKey(prev => prev + 1);
       } catch (error) {
@@ -728,7 +731,10 @@ export function MyRemNoteQueue({
   const handleAgain = async () => {
     if (currentCardData?.card) {
       try {
-        await currentCardData.card.updateCardRepetitionStatus(QueueInteractionScore.AGAIN);
+        const freshCard = await plugin.card.findOne(currentCardData.card._id);
+        if (freshCard) {
+          await freshCard.updateCardRepetitionStatus(QueueInteractionScore.AGAIN);
+        }
         // Trigger refresh of table data to show new rating
         setTableRefreshKey(prev => prev + 1);
       } catch (error) {

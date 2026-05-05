@@ -1347,7 +1347,7 @@ function CustomQueueWidget() {
                                                                         includeReferencingRem: false,
                                                                         includeTaggedRem: true,
                                                                         includeEigenschaften: true,
-                                                                        excludeNewProperties: false,
+                                                                        excludeNewProperties: true,
                                                                         maximumNumberOfCards: 1000});
 
     const [isQueueExpanded, setIsQueueExpanded] = useState<boolean>(true);
@@ -1533,7 +1533,7 @@ function CustomQueueWidget() {
     const loadRemQueue = async () => {
       //console.log(await getRemText(plugin, focusedRem));
 
-      console.log(searchOptions);
+      //console.log(searchOptions);
 
       setCardIds([]);
       setSearchDataList([]);

@@ -106,22 +106,6 @@ export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem, cache?: R
   return undefined;
 }
 
-// Builds the set of all property IDs that are "known" to the root rem:
-// for each direct DESCRIPTOR or DOCUMENT child P of rem, includes P itself
-// plus all IDs in P's ancestor and descendant property-hierarchy chains.
-// Used to filter out "new" properties introduced by descendants.
-// Walks the extends-parent chain of a property rem upward until it finds the root
-// (a rem with no extends parents). Returns that root rem.
-async function getPropertyRootAncestor(
-  plugin: RNPlugin, rem: Rem, cache?: RemCache, visited = new Set<string>()
-): Promise<Rem> {
-  if (visited.has(rem._id)) return rem;
-  visited.add(rem._id);
-  const parents = await getExtendsParents(plugin, rem, cache);
-  if (parents.length === 0) return rem;
-  return getPropertyRootAncestor(plugin, parents[0], cache, visited);
-}
-
 // Returns the parent Rems referenced under the "extends" descriptor child of `rem`.
 export async function getExtendsParents(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Rem[]> {
   const ext = await getExtendsDescriptor(plugin, rem, cache);
@@ -788,8 +772,8 @@ interface SearchOptions {
   includeReferencingRem: boolean,
   includeTaggedRem: boolean, // Include flashcards that are tagged with this rem
   includeEigenschaften: boolean, // Include flashcards from the Eigenschaften subtree of each rem
-  excludeNewProperties: boolean, // When true, skip properties in descendants that have no "extends" child (i.e. newly defined, not inherited)
-  knownPropertyRootIds?: Set<string>, // Pre-computed set of root ancestor IDs for all known properties of the selected rem
+  excludeNewProperties: boolean, // When true, collect only checked properties explicitly; skip all properties during structural traversal
+  skipProperties?: boolean, // Internal: when true, getCardsOfRem skips getCardsOfDirectProperties and getCardsOfProperties
   maximumNumberOfCards: number,
   // TODO: includeReferencedCard, includeReferencingCard, includeReferencedRem, includeReferencingRem â€” not yet wired into the new card-collection architecture
 }
@@ -874,7 +858,6 @@ interface CardCollectionContext {
   addedDisabledRemIds: Set<string>; // dedup disabled cards globally
   excludedPropertyIds: Set<string>; // unchecked property IDs from the UI
   processedRemIds: Set<string>;     // cycle / revisit guard
-  includedPropertyRootIds: Set<string> | null; // null = no filter; non-null = set of root ancestor IDs for the selected rem's known property types
   cache: RemCache;                  // per-run SDK call memoization
 }
 
@@ -995,11 +978,6 @@ async function getCardsOfDirectProperties(
     const baseName = name.includes(' > ') ? name.split(' > ').pop()!.trim() : name.trim();
     if (RESERVED_PROPERTY_KEYWORDS.includes(baseName.toLowerCase())) continue;
     if (ctx.excludedPropertyIds.has(child._id)) continue;
-    // Skip properties whose type (root ancestor) is not in the known set — excludes new properties added by descendants
-    if (ctx.includedPropertyRootIds !== null) {
-      const root = await getPropertyRootAncestor(plugin, child, ctx.cache);
-      if (!ctx.includedPropertyRootIds.has(root._id)) continue;
-    }
     results.push(...await getCardsOfDirectProperty(plugin, child, searchOptions, ctx));
   }
 
@@ -1020,9 +998,7 @@ async function getCardsOfProperty(
   const propertyCtx: CardCollectionContext = {
     ...ctx,
     excludedPropertyIds: new Set(),
-    // Once inside a known property, allow all its sub-properties freely.
-    // The allowlist only gates which top-level properties to enter, not their internals.
-    includedPropertyRootIds: null,
+    // Clear skipProperties inside a property — sub-properties are collected freely.
   };
   return getCardsOfRem(
     plugin,
@@ -1043,11 +1019,6 @@ async function getCardsOfProperties(
   for (const child of children) {
     if (!await cIsDocument(child, ctx.cache)) continue;
     if (ctx.excludedPropertyIds.has(child._id)) continue;
-    // Skip properties whose type (root ancestor) is not in the known set — excludes new properties added by descendants
-    if (ctx.includedPropertyRootIds !== null) {
-      const root = await getPropertyRootAncestor(plugin, child, ctx.cache);
-      if (!ctx.includedPropertyRootIds.has(root._id)) continue;
-    }
     results.push(...await getCardsOfProperty(plugin, child, searchOptions, ctx));
   }
 
@@ -1161,9 +1132,6 @@ async function getCardsOfRem(
       addedDisabledRemIds: new Set(),
       excludedPropertyIds,
       processedRemIds: new Set(),
-      includedPropertyRootIds: searchOptions.excludeNewProperties
-        ? (searchOptions.knownPropertyRootIds ?? null)
-        : null,
       cache,
     };
   }
@@ -1180,8 +1148,10 @@ async function getCardsOfRem(
     if (searchOptions.includeEigenschaften) {
       results.push(...await getCardsOfEigenschaften(plugin, rem, ctx));
     }
-    results.push(...await getCardsOfDirectProperties(plugin, rem, searchOptions, ctx));
-    results.push(...await getCardsOfProperties(plugin, rem, searchOptions, ctx));
+    if (!searchOptions.skipProperties) {
+      results.push(...await getCardsOfDirectProperties(plugin, rem, searchOptions, ctx));
+      results.push(...await getCardsOfProperties(plugin, rem, searchOptions, ctx));
+    }
   }
 
   // TAGGED REM: flashcards tagged with this rem
@@ -1637,21 +1607,42 @@ function CustomQueueWidget() {
               let fetchedCards: SearchData[] = [];
               const remType = await currentFocusedRem.getType();
 
-              // Helper: create a fresh CardCollectionContext for direct-property traversal.
-              const makeDirectPropCtx = (): CardCollectionContext => ({
+              // Factory for a fresh CardCollectionContext.
+              const makeCtx = (): CardCollectionContext => ({
                 addedCardIds: new Set(),
                 addedDisabledRemIds: new Set(),
                 excludedPropertyIds: new Set(),
                 processedRemIds: new Set(),
-                includedPropertyRootIds: null,
                 cache: createRemCache(),
               });
 
               if (remType === RemType.DESCRIPTOR) {
                 // Focused rem is a direct property — traverse its extension chain directly.
                 fetchedCards = await getCardsOfDirectProperty(
-                  plugin, currentFocusedRem, searchOptions, makeDirectPropCtx()
+                  plugin, currentFocusedRem, searchOptions, makeCtx()
                 );
+              } else if (searchOptions.excludeNewProperties) {
+                // Explicitly collect cards from each checked property only.
+                // Then do a skipProperties pass to pick up Eigenschaften + structural
+                // descendants/ancestors without entering any properties.
+                const sharedCtx = makeCtx();
+                const checkedProps = remProperties.filter(p => checkedPropertyIds.has(p.id));
+                for (const prop of checkedProps) {
+                  const propRem = await plugin.rem.findOne(prop.id);
+                  if (!propRem) continue;
+                  if (prop.isDirect) {
+                    fetchedCards.push(...await getCardsOfDirectProperty(plugin, propRem, searchOptions, sharedCtx));
+                  } else {
+                    fetchedCards.push(...await getCardsOfProperty(plugin, propRem, searchOptions, sharedCtx));
+                  }
+                }
+                // Collect Eigenschaften + descendant/ancestor structure; skip all properties.
+                fetchedCards.push(...await getCardsOfRem(
+                  plugin, currentFocusedRem,
+                  { ...searchOptions, skipProperties: true },
+                  new Set(),
+                  sharedCtx
+                ));
               } else {
                 // Normal class/document rem — use the full getCardsOfRem pipeline.
                 // Compute exclusion set from unchecked properties in the UI,
@@ -1668,35 +1659,16 @@ function CustomQueueWidget() {
                   for (const aid of ancestorIds) excludedPropertyIds.add(aid);
                   for (const did of descendantIds) excludedPropertyIds.add(did);
                 }
-
-                // Pre-compute root ancestor IDs for all known properties of this rem.
-                let knownPropertyRootIds: Set<string> | undefined;
-                if (searchOptions.excludeNewProperties) {
-                  knownPropertyRootIds = new Set<string>();
-                  await Promise.all(remProperties.map(async (p) => {
-                    const propRem = await plugin.rem.findOne(p.id);
-                    if (!propRem) return;
-                    const root = await getPropertyRootAncestor(plugin, propRem);
-                    knownPropertyRootIds!.add(root._id);
-                  }));
-                }
-
-                fetchedCards = await getCardsOfRem(
-                  plugin, currentFocusedRem,
-                  { ...searchOptions, knownPropertyRootIds },
-                  excludedPropertyIds
-                );
+                fetchedCards = await getCardsOfRem(plugin, currentFocusedRem, searchOptions, excludedPropertyIds);
               }
 
-              // Re-usable excluded set for post-filters (empty for DESCRIPTOR path)
-              const excludedPropertyIds = remType === RemType.DESCRIPTOR ? new Set<string>() : (() => {
-                // Already computed above in the else branch — but TypeScript needs it in scope.
-                // Re-derive cheaply (unchecked only, no expansion needed for post-filter calls).
-                const ids = new Set<string>(remProperties.filter(p => !checkedPropertyIds.has(p.id)).map(p => p.id));
-                return ids;
-              })();
-
-              //console.log("fetchedCards: " + fetchedCards.length)
+              //
+              // Filter
+              //
+              // Exclusion set for post-filter baseline calls (referencedOnly).
+              const excludedPropertyIds = (remType !== RemType.DESCRIPTOR && !searchOptions.excludeNewProperties)
+                ? new Set<string>(remProperties.filter(p => !checkedPropertyIds.has(p.id)).map(p => p.id))
+                : new Set<string>();
 
               // DUEONLY: Remove Cards that are not due, if dueOnly option is checked.
               if(searchOptions.dueOnly) {
@@ -1711,7 +1683,7 @@ function CustomQueueWidget() {
               if(searchOptions.referencedOnly) {
                 const baseOpts = {...searchOptions, referencedOnly: false, includeReferencedCard: false, includeReferencingCard: false, includeReferencedRem: false, includeReferencingRem: false, includeTaggedRem: false};
                 const nonRefCards = remType === RemType.DESCRIPTOR
-                  ? await getCardsOfDirectProperty(plugin, currentFocusedRem, baseOpts, makeDirectPropCtx())
+                  ? await getCardsOfDirectProperty(plugin, currentFocusedRem, baseOpts, makeCtx())
                   : await getCardsOfRem(plugin, currentFocusedRem, baseOpts, excludedPropertyIds);
                 
                 // Create a Set of _ids from B for efficient lookup (filter out null cards)

@@ -606,8 +606,18 @@ export function MyRemNoteQueue({
       }
 
       try {
+        // Guard: skip if card or rem is malformed
+        if (!currentCardData.card || !currentCardData.rem?._id) {
+          setIsLoading(false);
+          return;
+        }
+
         // Load card type (forward, backward, or cloze)
-        const type = await currentCardData.card.getType();
+        // Re-fetch card from DB to ensure remId is populated (stale card objects can have undefined remId)
+        //console.log('[DEBUG loadContent] step 1: card.getType | card._id:', currentCardData.card?._id, 'rem._id:', currentCardData.rem?._id);
+        const freshCard = await plugin.card.findOne(currentCardData.card._id);
+        if (!freshCard) { setIsLoading(false); return; }
+        const type = await freshCard.getType();
         setCardType(type);
         
         // Detect LaTeX cloze in rem text ({{c1::...}} syntax inside LaTeX blocks)
@@ -620,6 +630,7 @@ export function MyRemNoteQueue({
         setParentHint(hint);
         
         // Check if rem is a descriptor (not extends/implements/Eigenschaften) - if so, show parent as main question
+        //console.log('[DEBUG loadContent] step 2: rem.getType | rem._id:', currentCardData.rem?._id);
         const remType = await currentCardData.rem.getType();
         if (remType === RemType.DESCRIPTOR) {
           const remText = await getRemText(plugin, currentCardData.rem);
@@ -655,6 +666,7 @@ export function MyRemNoteQueue({
         setCurrentTags(tags.filter((tag) => tag.text.trim().length > 0));
         
         // Load children and their text
+        //console.log('[DEBUG loadContent] step 3: getChildrenRem | rem._id:', currentCardData.rem?._id);
         const children = await currentCardData.rem.getChildrenRem();
         setChildrenRems(children);
         
@@ -662,6 +674,8 @@ export function MyRemNoteQueue({
         const regular: Rem[] = [];
         const extraDetail: Rem[] = [];
         for (const child of children) {
+          if (!child?._id) continue; // skip malformed child stubs
+          //console.log('[DEBUG loadContent] step 4: child.getType | child._id:', child._id);
           const hasExtraCardDetail = await child.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail);
           if (hasExtraCardDetail) {
             extraDetail.push(child);

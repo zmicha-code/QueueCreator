@@ -1394,8 +1394,8 @@ function CustomQueueWidget() {
                     setSearchDataList(loadedSearchData);
                     setCardIds(enabledCardIds);
                     setCardsData(await questionsFromSearchData(plugin, loadedSearchData));
-                    // Restore stored index (clamped to valid range)
-                    const validIndex = Math.min(Math.max(0, storedIndex), Math.max(0, loadedSearchData.length - 1));
+                    // Restore stored index (allow length to restore completion state)
+                    const validIndex = Math.min(Math.max(0, storedIndex), loadedSearchData.length);
                     setCurrentQueueIndex(validIndex);
                     updateCardInfo();
                 }

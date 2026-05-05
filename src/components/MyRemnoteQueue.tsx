@@ -434,8 +434,8 @@ export function MyRemNoteQueue({
   useEffect(() => {
     const enabledCards = cards.filter((c) => c.card !== null) as { rem: Rem; card: Card }[];
     setQueueOrder(enabledCards);
-    // Use initialIndex on first load, clamp to valid range
-    const validIndex = Math.min(Math.max(0, initialIndex), Math.max(0, enabledCards.length - 1));
+    // Use initialIndex on first load, clamp to valid range (allow length to restore completion state)
+    const validIndex = Math.min(Math.max(0, initialIndex), enabledCards.length);
     setCurrentIndex(validIndex);
     setInitializedFromCards(true);
   }, [cards]);
@@ -820,6 +820,9 @@ export function MyRemNoteQueue({
     } else {
       // Queue complete - increment index past the end to show completion state
       setCurrentIndex(queueOrder.length);
+      if (onCurrentIndexChange) {
+        onCurrentIndexChange(queueOrder.length);
+      }
       if (onQueueComplete) {
         onQueueComplete();
       }

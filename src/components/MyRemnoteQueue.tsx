@@ -456,7 +456,7 @@ export function MyRemNoteQueue({
   const [isListExpanded, setIsListExpanded] = useState(false);
   const [sortColumn, setSortColumn] = useState<'queue' | 'text' | 'nextDate' | 'interval' | 'lastRating'>('queue');
   const [sortAscending, setSortAscending] = useState<boolean>(true);
-  const [cardsData, setCardsData] = useState<{ id: string, cardId: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[]>([]);
+  const [cardsData, setCardsData] = useState<{ id: string, cardId: string, text: string, nextDate: number, interval: string, intervalMs: number, lastRatings: string[] }[]>([]);
   // Key to force refresh of table data after rating
   const [tableRefreshKey, setTableRefreshKey] = useState(0);
   
@@ -498,7 +498,7 @@ export function MyRemNoteQueue({
   // Load cards data for table display
   useEffect(() => {
     async function loadCardsData() {
-      const data: { id: string, cardId: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[] = [];
+      const data: { id: string, cardId: string, text: string, nextDate: number, interval: string, intervalMs: number, lastRatings: string[] }[] = [];
       for (const item of queueOrder) {
         const text = await getRemText(plugin, item.rem);
         // Re-fetch card from database to get fresh repetitionHistory
@@ -513,6 +513,7 @@ export function MyRemNoteQueue({
           text,
           nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0,
           interval,
+          intervalMs: lastInterval ? lastInterval.workingInterval : 0,
           lastRatings
         });
       }
@@ -568,7 +569,7 @@ export function MyRemNoteQueue({
           comparison = a.nextDate - b.nextDate;
           break;
         case 'interval':
-          comparison = a.interval.localeCompare(b.interval);
+          comparison = a.intervalMs - b.intervalMs;
           break;
         case 'lastRating':
           const ratingA = ratingOrder[a.lastRatings[0]] ?? -1;

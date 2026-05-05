@@ -162,6 +162,17 @@ const earlyReviewStyle: React.CSSProperties = {
   borderRadius: "6px",
 };
 
+const lastIntervalStyle: React.CSSProperties = {
+  textAlign: "center",
+  fontSize: "14px",
+  color: "var(--text-muted, #888)",
+  fontWeight: 500,
+  marginTop: "12px",
+  padding: "8px",
+  backgroundColor: "var(--background-secondary, rgba(0,0,0,0.05))",
+  borderRadius: "6px",
+};
+
 const progressButtonStyle: React.CSSProperties = {
   textAlign: "center",
   fontSize: "14px",
@@ -455,6 +466,9 @@ export function MyRemNoteQueue({
   const [pathRevealed, setPathRevealed] = useState(false);
   const [currentTags, setCurrentTags] = useState<{ id: string; text: string }[]>([]);
   
+  // Whether to show full rating history
+  const [showHistory, setShowHistory] = useState(false);
+
   // Predicted intervals for answer buttons
   const [predictedIntervals, setPredictedIntervals] = useState<{
     again: string;
@@ -706,6 +720,7 @@ export function MyRemNoteQueue({
 
     loadContent();
     setAnswerState("question");
+    setShowHistory(false);
   }, [currentIndex, currentCardData?.rem._id, renderKey, plugin]);
 
   const handleShowAnswer = () => {
@@ -1143,6 +1158,54 @@ export function MyRemNoteQueue({
         </button>
       ) : (
         <>
+          {(() => {
+            const history = currentCardData.card.repetitionHistory;
+            const lastInterval = getLastInterval(history);
+            let mainBlock: React.ReactNode;
+            if (lastInterval) {
+              const nextDate = lastInterval.intervalSetOn + lastInterval.workingInterval;
+              const isEarlyReview = nextDate > Date.now();
+              const daysAgo = Math.round((Date.now() - lastInterval.intervalSetOn) / (1000 * 60 * 60 * 24));
+              const intervalStr = formatMilliseconds(lastInterval.workingInterval, true);
+              const message = `Last Interval (${intervalStr}) set ${daysAgo} day${daysAgo !== 1 ? 's' : ''} ago.`;
+              mainBlock = isEarlyReview ? (
+                <div style={earlyReviewStyle}>Early Review! {message}</div>
+              ) : (
+                <div style={lastIntervalStyle}>{message}</div>
+              );
+            } else {
+              mainBlock = <div style={lastIntervalStyle}>New Card!</div>;
+            }
+            const allRatings = getLastRatingStr(history, history ? history.length : 0).slice().reverse();
+            return (
+              <>
+                {mainBlock}
+                <div style={{ textAlign: 'center', marginTop: '4px' }}>
+                  <span
+                    style={{ fontSize: '12px', cursor: 'pointer', color: 'var(--text-link, #4a90d9)', userSelect: 'none' }}
+                    onClick={() => setShowHistory(h => !h)}
+                  >
+                    {showHistory ? 'Hide History' : 'Show History'}
+                  </span>
+                  {showHistory && (
+                    <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: '3px', marginTop: '6px' }}>
+                      {allRatings.length > 0 ? allRatings.map((rating, index) => (
+                        <img
+                          key={index}
+                          style={{ width: '16px', height: '16px' }}
+                          src={scoreToImage.get(rating)}
+                          alt={rating}
+                          title={rating}
+                        />
+                      )) : (
+                        <span style={{ fontSize: '12px', opacity: 0.5 }}>No history yet.</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            );
+          })()}
           <div style={buttonContainerStyle}>
             <button style={skipButtonStyle} onClick={handleSkip} title="Moves the card to the back of the queue without rating it.">
               Skip
@@ -1176,21 +1239,6 @@ export function MyRemNoteQueue({
               {predictedIntervals.easy}
             </button>
           </div>
-          {(() => {
-            const lastInterval = getLastInterval(currentCardData.card.repetitionHistory);
-            if (lastInterval) {
-              const nextDate = lastInterval.intervalSetOn + lastInterval.workingInterval;
-              const earlyReviewTime = nextDate - Date.now();
-              if (earlyReviewTime > 0) {
-                return (
-                  <div style={earlyReviewStyle}>
-                    Early Review ({formatMilliseconds(earlyReviewTime, true)} early - Interval {formatMilliseconds(lastInterval.workingInterval, true)})!
-                  </div>
-                );
-              }
-            }
-            return null;
-          })()}
         </>
       )}
     </div>

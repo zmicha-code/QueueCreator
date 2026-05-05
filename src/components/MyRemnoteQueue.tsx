@@ -456,7 +456,7 @@ export function MyRemNoteQueue({
   const [isListExpanded, setIsListExpanded] = useState(false);
   const [sortColumn, setSortColumn] = useState<'queue' | 'text' | 'nextDate' | 'interval' | 'lastRating'>('queue');
   const [sortAscending, setSortAscending] = useState<boolean>(true);
-  const [cardsData, setCardsData] = useState<{ id: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[]>([]);
+  const [cardsData, setCardsData] = useState<{ id: string, cardId: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[]>([]);
   // Key to force refresh of table data after rating
   const [tableRefreshKey, setTableRefreshKey] = useState(0);
   
@@ -498,7 +498,7 @@ export function MyRemNoteQueue({
   // Load cards data for table display
   useEffect(() => {
     async function loadCardsData() {
-      const data: { id: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[] = [];
+      const data: { id: string, cardId: string, text: string, nextDate: number, interval: string, lastRatings: string[] }[] = [];
       for (const item of queueOrder) {
         const text = await getRemText(plugin, item.rem);
         // Re-fetch card from database to get fresh repetitionHistory
@@ -509,6 +509,7 @@ export function MyRemNoteQueue({
         const interval = lastInterval ? formatMilliseconds(lastInterval.workingInterval) : '';
         data.push({
           id: item.rem._id,
+          cardId: item.card._id,
           text,
           nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0,
           interval,
@@ -524,13 +525,21 @@ export function MyRemNoteQueue({
 
   // Sorting handlers
   const handleSort = (column: 'queue' | 'text' | 'nextDate' | 'interval' | 'lastRating') => {
+    console.log('[Sort] handleSort called | column:', column, '| current sortColumn:', sortColumn, '| sortAscending:', sortAscending, '| cardsData.length:', cardsData.length);
     if (sortColumn === column) {
+      console.log('[Sort] Toggling direction → new sortAscending will be:', !sortAscending);
       setSortAscending(!sortAscending);
     } else {
+      console.log('[Sort] Switching column →', column, '(sortAscending → true)');
       setSortColumn(column);
       setSortAscending(true);
     }
   };
+
+  // Debug: log whenever sort state actually changes
+  useEffect(() => {
+    console.log('[Sort] Sort state updated → sortColumn:', sortColumn, '| sortAscending:', sortAscending);
+  }, [sortColumn, sortAscending]);
 
   const ratingOrder: Record<string, number> = {
     'Easily recalled': 4,
@@ -542,11 +551,14 @@ export function MyRemNoteQueue({
   };
 
   const getSortedCardsData = () => {
+    console.log('[Sort] getSortedCardsData called → sortColumn:', sortColumn, '| sortAscending:', sortAscending, '| cardsData.length:', cardsData.length);
     // If sorting by queue order, return data in original order (or reversed)
     if (sortColumn === 'queue') {
-      return sortAscending ? [...cardsData] : [...cardsData].reverse();
+      const result = sortAscending ? [...cardsData] : [...cardsData].reverse();
+      console.log('[Sort] queue order result ids (last 6):', result.map(c => c.id.slice(-6)));
+      return result;
     }
-    return [...cardsData].sort((a, b) => {
+    const sorted = [...cardsData].sort((a, b) => {
       let comparison = 0;
       switch (sortColumn) {
         case 'text':
@@ -566,6 +578,8 @@ export function MyRemNoteQueue({
       }
       return sortAscending ? comparison : -comparison;
     });
+    console.log('[Sort] sorted result texts:', sorted.map(c => c.text.slice(0, 20)));
+    return sorted;
   };
 
   const openRem = async (id: string) => {
@@ -920,13 +934,13 @@ export function MyRemNoteQueue({
             </thead>
             <tbody>
               {getSortedCardsData().map((c, index) => {
-                const queuePosition = cardsData.findIndex(card => card.id === c.id);
+                const queuePosition = cardsData.findIndex(card => card.cardId === c.cardId);
                 const isCurrentCard = queuePosition === currentIndex;
                 const highlightStyle: React.CSSProperties = isCurrentCard 
                   ? { border: "1px solid #ddd", padding: 8, textAlign: "center", backgroundColor: "var(--highlight-color, rgba(74, 144, 217, 0.3))" } 
                   : { border: "1px solid #ddd", padding: 8, textAlign: "center" };
                 return (
-                <tr key={c.id}>
+                <tr key={c.cardId}>
                   <td style={highlightStyle}>
                     {queuePosition + 1}
                   </td>

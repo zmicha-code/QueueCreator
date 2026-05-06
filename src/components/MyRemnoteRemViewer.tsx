@@ -638,6 +638,18 @@ export function MyRemnoteRemViewer({
           setChildrenIds([]);
           setHintText(undefined);
         } else {
+          // Skip rems named "extends" (meta descriptor) and treat them as empty
+          const remName = await getRemPlainText(plugin, rem);
+          if (remName === "extends") {
+            if (isMounted) {
+              setContent([]);
+              setChildrenIds([]);
+              setHintText(undefined);
+              setIsLoading(false);
+            }
+            return;
+          }
+
           // Use external hint if provided, otherwise extract from backText
           if (externalHint) {
             setHintText(externalHint);

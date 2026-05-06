@@ -88,6 +88,18 @@ function cGetRemText(plugin: RNPlugin, rem: Rem, cache: RemCache, extendedName =
   return cache.getRemText.get(key)!;
 }
 
+// Returns the IDs of all rems referenced (via 'q' items) in a RichText array.
+function getRichTextRefIds(richText: RichTextInterface | undefined): string[] {
+  if (!richText) return [];
+  const ids: string[] = [];
+  for (const item of richText) {
+    if (typeof item !== 'string' && item.i === 'q') {
+      ids.push(item._id);
+    }
+  }
+  return ids;
+}
+
 export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem, cache?: RemCache): Promise<Rem | undefined> {
   try {
     const children = cache ? await cGetChildrenRem(rem, cache) : await rem.getChildrenRem();
@@ -766,13 +778,10 @@ interface SearchOptions {
   //invertedDirection: boolean, // Inverted mean up. Instead of collecting flashcards from descendants
   includeReferencedCard: boolean,
   includeReferencingCard: boolean,
-  includeReferencedRem: boolean,
-  includeReferencingRem: boolean,
   includeTaggedRem: boolean, // Include flashcards that are tagged with this rem
   includeEigenschaften: boolean, // Include flashcards from the Eigenschaften subtree of each rem
   skipProperties?: boolean, // Internal: when true, getCardsOfRem skips getCardsOfDirectProperties and getCardsOfProperties
   maximumNumberOfCards: number,
-  // TODO: includeReferencedCard, includeReferencingCard, includeReferencedRem, includeReferencingRem â€” not yet wired into the new card-collection architecture
 }
 
 // Helper function assumed to be defined elsewhere
@@ -883,27 +892,84 @@ async function collectFlashcardToCtx(
 // Card Collection: Eigenschaften
 // =============================================================================
 
-// DFS over raw children (no filtering â€” Eigenschaften content is trusted).
-// Adds every flashcard in the subtree. Guards against cycles via processedRemIds.
-async function getAllFlashcardsInSubtree(
-  plugin: RNPlugin, rem: Rem, results: SearchData[], ctx: CardCollectionContext
+// Scan rem's text and children (recursively) for references to other flashcards,
+// adding each referenced flashcard to results. Chains transitively: if A→B→C,
+// all three are collected. visitedBodyIds guards against cycles.
+async function collectReferencedFlashcards(
+  plugin: RNPlugin, rem: Rem, results: SearchData[], ctx: CardCollectionContext,
+  visitedBodyIds: Set<string> = new Set()
 ): Promise<void> {
-  if (ctx.processedRemIds.has(rem._id)) return;
-  ctx.processedRemIds.add(rem._id);
+  if (visitedBodyIds.has(rem._id)) return;
+  visitedBodyIds.add(rem._id);
 
-  if (await isFlashcard(plugin, rem, ctx.cache)) {
-    await collectFlashcardToCtx(plugin, rem, results, ctx);
+  // Scan this rem's front text for 'q' references.
+  const refIds = getRichTextRefIds(rem.text);
+  for (const id of refIds) {
+    const referenced = await plugin.rem.findOne(id);
+    if (!referenced) continue;
+    if (await isFlashcard(plugin, referenced, ctx.cache)) {
+      await collectFlashcardToCtx(plugin, referenced, results, ctx);
+      // Chain: scan the referenced flashcard's body too.
+      await collectReferencedFlashcards(plugin, referenced, results, ctx, visitedBodyIds);
+    }
   }
 
+  // Recurse into children (the back-side of the card), skipping "extends" descriptors.
   const children = await cGetChildrenRem(rem, ctx.cache);
   for (const child of children) {
-    await getAllFlashcardsInSubtree(plugin, child, results, ctx);
+    const type = await cGetType(child, ctx.cache);
+    if (type === RemType.DESCRIPTOR) {
+      const name = (await cGetRemText(plugin, child, ctx.cache)).trim().toLowerCase();
+      if (name === 'extends') continue;
+    }
+    await collectReferencedFlashcards(plugin, child, results, ctx, visitedBodyIds);
+  }
+}
+
+// For each rem that references the given rem, find the flashcard it belongs to:
+//   Case 1: refRem's parent is a flashcard (reference in question or back child).
+//   Case 2: refRem's parent has ExtraCardDetail, and that parent's parent is a flashcard.
+// Inheritance references (parent = "extends" DESCRIPTOR) are skipped automatically
+// because a DESCRIPTOR is neither a flashcard nor has ExtraCardDetail.
+async function collectReferencingFlashcards(
+  plugin: RNPlugin, rem: Rem, results: SearchData[], ctx: CardCollectionContext
+): Promise<void> {
+  const referencingRems = await cRemsReferencingThis(rem, ctx.cache);
+  for (const refRem of referencingRems) {
+    const parent = await cGetParentRem(refRem, ctx.cache);
+    if (!parent) continue;
+
+    // Case 1: parent is a flashcard (reference lives in the front or a direct back child)
+    if (await isFlashcard(plugin, parent, ctx.cache)) {
+      await collectFlashcardToCtx(plugin, parent, results, ctx);
+      continue;
+    }
+
+    // Case 2: parent has ExtraCardDetail and grandparent is a flashcard
+    if (await parent.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) {
+      const grandparent = await cGetParentRem(parent, ctx.cache);
+      if (grandparent && await isFlashcard(plugin, grandparent, ctx.cache)) {
+        await collectFlashcardToCtx(plugin, grandparent, results, ctx);
+      }
+    }
+  }
+}
+
+// Collect cards from a single flashcard rem under Eigenschaften.
+async function getCardsOfFlashcard(
+  plugin: RNPlugin, rem: Rem, results: SearchData[], searchOptions: SearchOptions, ctx: CardCollectionContext
+): Promise<void> {
+  await collectFlashcardToCtx(plugin, rem, results, ctx);
+  if (searchOptions.includeReferencedCard) {
+    await collectReferencedFlashcards(plugin, rem, results, ctx);
   }
 }
 
 // Collect all flashcards from the "Eigenschaften"/"Properties" DESCRIPTOR child of rem.
+// Direct children of Eigenschaften are dispatched: flashcards -> getCardsOfFlashcard,
+// properties (document rem) -> getCardsOfProperty.
 async function getCardsOfEigenschaften(
-  plugin: RNPlugin, rem: Rem, ctx: CardCollectionContext
+  plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
 ): Promise<SearchData[]> {
   const results: SearchData[] = [];
   const rawChildren = await cGetChildrenRem(rem, ctx.cache);
@@ -914,7 +980,15 @@ async function getCardsOfEigenschaften(
     const baseName = name.includes(' > ') ? name.split(' > ').pop()!.trim() : name.trim();
     const baseNorm = baseName.toLowerCase();
     if (baseNorm === 'eigenschaften' || baseNorm === 'properties') {
-      await getAllFlashcardsInSubtree(plugin, child, results, ctx);
+      const eigenChildren = await cGetChildrenRem(child, ctx.cache);
+      for (const eigenChild of eigenChildren) {
+        if (await isFlashcard(plugin, eigenChild, ctx.cache)) {
+          await getCardsOfFlashcard(plugin, eigenChild, results, searchOptions, ctx);
+        } else {
+          // TODO: Check of search option skipProperties is checked?
+          results.push(...await getCardsOfProperty(plugin, eigenChild, searchOptions, ctx));
+        }
+      }
       break; // only one Eigenschaften per rem
     }
   }
@@ -1066,7 +1140,7 @@ async function getCardsOfDescendants(
 //   Empty = include all properties.
 //   Non-empty = only properties whose getBaseType() is in the set are collected.
 //
-// _ctx: internal â€” omit on top-level calls; passed through by recursive sub-functions.
+// _ctx: internal omit on top-level calls; passed through by recursive sub-functions.
 async function getCardsOfRem(
   plugin: RNPlugin,
   rem: Rem,
@@ -1098,7 +1172,7 @@ async function getCardsOfRem(
   // Skipped entirely when includeThisRem is false (only descendants/ancestors collected).
   if (searchOptions.includeThisRem) {
     if (searchOptions.includeEigenschaften) {
-      results.push(...await getCardsOfEigenschaften(plugin, rem, ctx));
+      results.push(...await getCardsOfEigenschaften(plugin, rem, searchOptions, ctx));
     }
     if (!searchOptions.skipProperties) {
       results.push(...await getCardsOfDirectProperties(plugin, rem, searchOptions, ctx));
@@ -1121,8 +1195,10 @@ async function getCardsOfRem(
     results.push(...await getCardsOfDescendants(plugin, rem, searchOptions, ctx));
   }
 
-  // TODO: includeReferencedCard, includeReferencingCard, includeReferencedRem, includeReferencingRem
-  // are not yet implemented in the new architecture.
+  // REFERENCING CARDS
+  if (searchOptions.includeReferencingCard) {
+    await collectReferencingFlashcards(plugin, rem, results, ctx);
+  }
 
   return results;
 }
@@ -1341,10 +1417,8 @@ function CustomQueueWidget() {
                                                                         ratingOnly: false,
                                                                         ratingFilter: QueueInteractionScore.AGAIN,
                                                                         //invertedDirection: false,
-                                                                        includeReferencedCard: false,
-                                                                        includeReferencingCard: false,
-                                                                        includeReferencedRem: false,
-                                                                        includeReferencingRem: false,
+                                                                        includeReferencedCard: true,
+                                                                        includeReferencingCard: true,
                                                                         includeTaggedRem: true,
                                                                         includeEigenschaften: true,
                                                                         maximumNumberOfCards: 1000});
@@ -1616,7 +1690,7 @@ function CustomQueueWidget() {
 
               // REFERENCEDONLY: Remove Cards that are Non-Ref Cards, if referencedOnly option is checked.
               if(searchOptions.referencedOnly) {
-                const baseOpts = {...searchOptions, referencedOnly: false, includeReferencedCard: false, includeReferencingCard: false, includeReferencedRem: false, includeReferencingRem: false, includeTaggedRem: false};
+                const baseOpts = {...searchOptions, referencedOnly: false, includeReferencedCard: false, includeReferencingCard: false, includeTaggedRem: false};
                 const nonRefCards = await collectCards(baseOpts);
                 
                 // Create a Set of _ids from B for efficient lookup (filter out null cards)
@@ -2030,15 +2104,6 @@ function CustomQueueWidget() {
               {/* Flashcards Referenced and Referencing group */}
               <div style={{ flex: 1 }}>
                 <h3>Include References</h3>
-                <label style={{ display: "block" }} title='Include Flashcards from Rems that are mentioned in Q/A'>
-                  <input 
-                    type="checkbox" 
-                    checked={searchOptions?.includeReferencedRem} 
-                    onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedRem: !searchOptions.includeReferencedRem })} 
-                    style={{ marginRight: '5px' }}
-                  />
-                    All Flashcards of Rem referenced in Flashcards of Queue.
-                </label>
                 <label style={{ display: "block" }} title='Include Flashcards that are mentioned in Q/A'>
                   <input 
                     type="checkbox" 
@@ -2046,7 +2111,7 @@ function CustomQueueWidget() {
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedCard: !searchOptions.includeReferencedCard })} 
                     style={{ marginRight: '5px' }}
                   />
-                    Flashcard referenced in Flashcards of Queue.
+                    Include referenced Flashcards.
                 </label>
                 <label style={{ display: "block" }} title='Include Flashcards that mention a Rem of the Queue.'>
                   <input 
@@ -2055,7 +2120,7 @@ function CustomQueueWidget() {
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencingCard: !searchOptions.includeReferencingCard })} 
                     style={{ marginRight: '5px' }}
                   />
-                    Flashcard that reference Rem of Queue.
+                    Include referencing Flashcards.
                 </label>
                 <label style={{ display: "block" }} title='Include Flashcards that are tagged with this Rem.'>
                   <input 
@@ -2064,7 +2129,7 @@ function CustomQueueWidget() {
                     onChange={(e) => setSearchOptions({ ...searchOptions, includeTaggedRem: !searchOptions.includeTaggedRem })} 
                     style={{ marginRight: '5px' }}
                   />
-                    Flashcards tagged with this Rem.
+                    Include tagged Flashcards.
                 </label>
               </div>
             </div>

@@ -860,11 +860,11 @@ async function addDisabledFlashcard(plugin: RNPlugin,
 // Shared mutable state threaded through all card-collection functions.
 // Created once per top-level getCardsOfRem call; passed to all sub-functions.
 interface CardCollectionContext {
-  addedCardIds: Set<string>;              // dedup enabled cards globally
-  addedDisabledRemIds: Set<string>;       // dedup disabled cards globally
-  includedPropertyBaseIds: Set<string>;   // whitelist of base type IDs; empty = include all
-  processedRemIds: Set<string>;           // cycle / revisit guard
-  cache: RemCache;                        // per-run SDK call memoization
+  addedCardIds: Set<string>;          // dedup enabled cards globally
+  addedDisabledRemIds: Set<string>;   // dedup disabled cards globally
+  includedPropertyIds: Set<string>;   // explicit property rem IDs to dispatch; empty = normal pipeline
+  processedRemIds: Set<string>;       // cycle / revisit guard
+  cache: RemCache;                    // per-run SDK call memoization
 }
 
 // Add all cards from a rem (known to be a flashcard) to results, using ctx for dedup.
@@ -1046,10 +1046,6 @@ async function getCardsOfDirectProperties(
     const name = await cGetRemText(plugin, child, ctx.cache);
     const baseName = name.includes(' > ') ? name.split(' > ').pop()!.trim() : name.trim();
     if (RESERVED_PROPERTY_KEYWORDS.includes(baseName.toLowerCase())) continue;
-    if (ctx.includedPropertyBaseIds.size > 0) {
-      const base = await getBaseType(plugin, child);
-      if (!ctx.includedPropertyBaseIds.has(base._id)) continue;
-    }
     results.push(...await getCardsOfDirectProperty(plugin, child, searchOptions, ctx));
   }
 
@@ -1062,14 +1058,14 @@ async function getCardsOfDirectProperties(
 
 // Collect cards from a single regular property rem, treating it as a full class:
 // its own cards, its sub-properties, and its descendants are all collected.
-// includedPropertyBaseIds is cleared for the recursive call — the whitelist
+// includedPropertyIds is cleared for the recursive call — the explicit list
 // only governs the top-level selected rem's properties, not nested ones.
 async function getCardsOfProperty(
   plugin: RNPlugin, propRem: Rem, searchOptions: SearchOptions, ctx: CardCollectionContext
 ): Promise<SearchData[]> {
   const propertyCtx: CardCollectionContext = {
     ...ctx,
-    includedPropertyBaseIds: new Set(), // Clear whitelist — sub-properties are collected freely.
+    includedPropertyIds: new Set(), // Clear explicit list — sub-properties are collected freely.
   };
   return getCardsOfRem(
     plugin,
@@ -1088,10 +1084,6 @@ async function getCardsOfProperties(
 
   for (const child of children) {
     if (!await cIsDocument(child, ctx.cache)) continue;
-    if (ctx.includedPropertyBaseIds.size > 0) {
-      const base = await getBaseType(plugin, child);
-      if (!ctx.includedPropertyBaseIds.has(base._id)) continue;
-    }
     results.push(...await getCardsOfProperty(plugin, child, searchOptions, ctx));
   }
 
@@ -1136,11 +1128,11 @@ async function getCardsOfDescendants(
 
 // Collect all flashcards from a class rem according to search options.
 //
-// ctx.includedPropertyBaseIds: whitelist of property base type IDs.
-//   Empty = include all properties.
-//   Non-empty = only properties whose getBaseType() is in the set are collected.
+// ctx.includedPropertyIds: explicit set of property rem IDs to collect.
+//   Empty = normal pipeline (collect all properties via getCardsOfDirectProperties / getCardsOfProperties).
+//   Non-empty = dispatch directly to those property rems; descendants only collect Eigenschaften.
 //
-// _ctx: internal omit on top-level calls; passed through by recursive sub-functions.
+// _ctx: internal — omit on top-level calls; passed through by recursive sub-functions.
 async function getCardsOfRem(
   plugin: RNPlugin,
   rem: Rem,
@@ -1156,7 +1148,7 @@ async function getCardsOfRem(
     ctx = {
       addedCardIds: new Set(),
       addedDisabledRemIds: new Set(),
-      includedPropertyBaseIds: new Set(),
+      includedPropertyIds: new Set(),
       processedRemIds: new Set(),
       cache,
     };
@@ -1175,8 +1167,24 @@ async function getCardsOfRem(
       results.push(...await getCardsOfEigenschaften(plugin, rem, searchOptions, ctx));
     }
     if (!searchOptions.skipProperties) {
-      results.push(...await getCardsOfDirectProperties(plugin, rem, searchOptions, ctx));
-      results.push(...await getCardsOfProperties(plugin, rem, searchOptions, ctx));
+      if (ctx.includedPropertyIds.size > 0) {
+        // Explicit mode: dispatch directly to each listed property rem.
+        // getCardsOfDirectProperty follows the extension chain across all subclasses.
+        // getCardsOfProperty collects the full subtree of a regular (document) property.
+        for (const id of ctx.includedPropertyIds) {
+          const propRem = await plugin.rem.findOne(id);
+          if (!propRem) continue;
+          const propType = await cGetType(propRem, ctx.cache);
+          if (propType === RemType.DESCRIPTOR) {
+            results.push(...await getCardsOfDirectProperty(plugin, propRem, searchOptions, ctx));
+          } else {
+            results.push(...await getCardsOfProperty(plugin, propRem, searchOptions, ctx));
+          }
+        }
+      } else {
+        results.push(...await getCardsOfDirectProperties(plugin, rem, searchOptions, ctx));
+        results.push(...await getCardsOfProperties(plugin, rem, searchOptions, ctx));
+      }
     }
   }
 
@@ -1192,7 +1200,13 @@ async function getCardsOfRem(
 
   // DESCENDANTS
   if (searchOptions.includeDescendants) {
-    results.push(...await getCardsOfDescendants(plugin, rem, searchOptions, ctx));
+    // In explicit-property mode, descendants must not re-enter the property dispatch
+    // (the extension chains already cover subclass instances). Their Eigenschaften
+    // are still collected via getCardsOfEigenschaften inside each descendant's getCardsOfRem call.
+    const descOpts = ctx.includedPropertyIds.size > 0
+      ? { ...searchOptions, skipProperties: true }
+      : searchOptions;
+    results.push(...await getCardsOfDescendants(plugin, rem, descOpts, ctx));
   }
 
   // REFERENCING CARDS
@@ -1625,11 +1639,11 @@ function CustomQueueWidget() {
               let fetchedCards: SearchData[] = [];
               const remType = await currentFocusedRem.getType();
 
-              // Factory for a fresh CardCollectionContext with empty whitelist (include all properties).
+              // Factory for a fresh CardCollectionContext with empty property list (normal pipeline).
               const makeCtx = (): CardCollectionContext => ({
                 addedCardIds: new Set(),
                 addedDisabledRemIds: new Set(),
-                includedPropertyBaseIds: new Set(),
+                includedPropertyIds: new Set(),
                 processedRemIds: new Set(),
                 cache: createRemCache(),
               });
@@ -1638,20 +1652,10 @@ function CustomQueueWidget() {
               const allChecked = remProperties.length === 0 || remProperties.every(p => checkedPropertyIds.has(p.id));
               const noneChecked = remProperties.length > 0 && remProperties.every(p => !checkedPropertyIds.has(p.id));
 
-              // Partial case: build whitelist of base type IDs from checked properties.
-              // A descendant's property shares the same base type iff it extends a checked property,
-              // so whitelisting by base type correctly includes new-in-descendant properties of that type.
-              let includedPropertyBaseIds: Set<string> | null = null;
-              if (!allChecked && !noneChecked) {
-                includedPropertyBaseIds = new Set<string>();
-                for (const prop of remProperties.filter(p => checkedPropertyIds.has(p.id))) {
-                  const propRem = await plugin.rem.findOne(prop.id);
-                  if (propRem) {
-                    const base = await getBaseType(plugin, propRem);
-                    includedPropertyBaseIds.add(base._id);
-                  }
-                }
-              }
+              // Partial case: build set of explicitly checked property IDs.
+              const includedPropertyIds: Set<string> | null = (!allChecked && !noneChecked)
+                ? new Set(remProperties.filter(p => checkedPropertyIds.has(p.id)).map(p => p.id))
+                : null;
 
               // Helper: run getCardsOfRem with the appropriate property mode.
               const collectCards = async (opts: SearchOptions): Promise<SearchData[]> => {
@@ -1667,10 +1671,10 @@ function CustomQueueWidget() {
                   // No properties checked: skip all properties at every recursion level.
                   return getCardsOfRem(plugin, currentFocusedRem, { ...opts, skipProperties: true });
                 }
-                // Partial: only collect properties whose base type is whitelisted.
+                // Partial: dispatch directly to each checked property.
                 return getCardsOfRem(plugin, currentFocusedRem, opts, {
                   ...makeCtx(),
-                  includedPropertyBaseIds: includedPropertyBaseIds!,
+                  includedPropertyIds: includedPropertyIds!,
                 });
               };
 

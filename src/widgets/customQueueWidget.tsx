@@ -936,16 +936,22 @@ async function collectReferencingFlashcards(
 ): Promise<void> {
   const referencingRems = await cRemsReferencingThis(rem, ctx.cache);
   for (const refRem of referencingRems) {
+    // Case 1: refRem itself is a flashcard (reference lives in the question of the flashcard)
+    if (await isFlashcard(plugin, refRem, ctx.cache)) {
+      await collectFlashcardToCtx(plugin, refRem, results, ctx);
+      continue;
+    }
+
     const parent = await cGetParentRem(refRem, ctx.cache);
     if (!parent) continue;
 
-    // Case 1: parent is a flashcard (reference lives in the front or a direct back child)
+    // Case 2: parent is a flashcard (reference lives in a direct back child)
     if (await isFlashcard(plugin, parent, ctx.cache)) {
       await collectFlashcardToCtx(plugin, parent, results, ctx);
       continue;
     }
 
-    // Case 2: parent has ExtraCardDetail and grandparent is a flashcard
+    // Case 3: parent has ExtraCardDetail and grandparent is a flashcard
     if (await parent.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) {
       const grandparent = await cGetParentRem(parent, ctx.cache);
       if (grandparent && await isFlashcard(plugin, grandparent, ctx.cache)) {
@@ -1934,7 +1940,7 @@ function CustomQueueWidget() {
     ]);
 
     return (
-      <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10, overflowY: "auto", minHeight: 0 }} >
+      <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10, overflowY: "auto", minHeight: 0, boxSizing: "border-box" }} >
         {/* Tab Header */}
         <div style={{ display: "flex", borderBottom: "2px solid #ddd", marginBottom: 10 }}>
           <button

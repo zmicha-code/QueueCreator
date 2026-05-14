@@ -1050,6 +1050,7 @@ export function MyRemNoteQueue({
                 showChildren={false}
                 loadingText="(loading...)"
                 notFoundText="(not found)"
+                externalHint={parentHint}
                 clozeMode={propertyParentHasLatexCloze ? 'answer' : undefined}
               />
               <span style={{ opacity: 0.7 }}>({questionText})</span>
@@ -1061,7 +1062,7 @@ export function MyRemNoteQueue({
               showChildren={false}
               loadingText="(loading question...)"
               notFoundText="(question not found)"
-              showHint="back"
+              externalHint={parentHint}
               clozeMode={hasLatexCloze ? 'question' : undefined}
             />
           )}

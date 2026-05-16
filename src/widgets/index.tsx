@@ -59,10 +59,25 @@ async function onActivate(plugin: ReactRNPlugin) {
     }
   );  
 
-  await plugin.app.registerWidget('customQueueWidget', WidgetLocation.RightSidebar, {
-    dimensions: { height: 'auto', width: '100%' },
-    widgetTabIcon: "https://i.imgur.com/nGwgOpN.png"
-  });
+  const platform = await plugin.app.getPlatform();
+
+  if (platform === 'app') {
+    await plugin.app.registerWidget('customQueueWidget', WidgetLocation.RightSidebar, {
+      dimensions: { height: 'auto', width: '100%' },
+      widgetTabIcon: "https://i.imgur.com/nGwgOpN.png"
+    });
+  } else {
+    await plugin.app.registerWidget('customQueueWidget', WidgetLocation.Pane, {
+      dimensions: { height: 'auto', width: '100%' },
+    });
+    await plugin.app.registerCommand({
+      id: 'queue-command',
+      name: 'Open in QueueCreator',
+      action: async () => {
+        plugin.window.openWidgetInPane('customQueueWidget');
+      },
+    });
+  }
 }
 
 async function onDeactivate(_: ReactRNPlugin) {}

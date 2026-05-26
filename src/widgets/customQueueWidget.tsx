@@ -1118,10 +1118,19 @@ async function getCardsOfDescendants(
 
   for (const child of allChildren) {
     const type = await cGetType(child, ctx.cache);
-    if (type === RemType.DESCRIPTOR) continue; // direct properties - handled by getCardsOfDirectProperties
-    if (type === RemType.PORTAL) continue;      // portals and their children are skipped
-    if (await child.isDocument()) continue;     // regular properties - handled by getCardsOfProperties
+    if (type === RemType.DESCRIPTOR) continue;
+    if (type === RemType.PORTAL) continue;
     if (ctx.processedRemIds.has(child._id)) continue;
+
+    // Must be before isDocument() — a flashcard can also be a document
+    if (await isFlashcard(plugin, child, ctx.cache)) {
+      ctx.processedRemIds.add(child._id);
+      await collectFlashcardToCtx(plugin, child, results, ctx);
+      continue;
+    }
+
+    if (await child.isDocument()) continue; // regular properties - handled by getCardsOfProperties
+    
     results.push(...await getCardsOfRem(plugin, child, { ...searchOptions, includeThisRem: true }, ctx));
   }
 

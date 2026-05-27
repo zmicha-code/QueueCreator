@@ -304,18 +304,33 @@ async function processRichTextToElements(
 
     switch (item.i) {
       case "q": {
-        // Reference to another rem - get the name, underline and color it
+        // Reference to another rem - render its rich text (handles LaTeX, cloze, etc.)
         const referencedRem = await plugin.rem.findOne(item._id);
-        let refText = "";
+        let refElements: ReactNode[] = [];
         let refPath = "";
+
+        // For references, always use 'answer' cloze mode so {{cx::...}} syntax is stripped
+        // and the readable content is shown rather than raw LaTeX being passed to KaTeX.
+        const refClozeMode = clozeMode === 'question' ? 'question' : 'answer';
+
         if (referencedRem) {
-          refText = await getRemPlainText(plugin, referencedRem);
           refPath = await getRemPath(plugin, referencedRem);
+          const refRichText = referencedRem.text;
+          if (refRichText && refRichText.length > 0) {
+            refElements = await processRichTextToElements(plugin, refRichText, refClozeMode);
+          }
+          if (refElements.length === 0) {
+            const fallback = await getRemPlainText(plugin, referencedRem);
+            refElements = [<span key="fallback">{fallback}</span>];
+          }
         } else if (item.textOfDeletedRem) {
-          refText = await getPlainTextFromRichText(plugin, item.textOfDeletedRem);
-          refPath = refText;
+          refElements = await processRichTextToElements(plugin, item.textOfDeletedRem, refClozeMode);
+          if (refElements.length === 0) {
+            const fallback = await getPlainTextFromRichText(plugin, item.textOfDeletedRem);
+            refElements = [<span key="fallback">{fallback}</span>];
+          }
         }
-        
+
         // Create click handler to open the referenced rem
         const remId = item._id;
         const handleClick = async () => {
@@ -324,7 +339,7 @@ async function processRichTextToElements(
             await rem.openRemAsPage();
           }
         };
-        
+
         elements.push(
           <span
             key={idx}
@@ -336,7 +351,7 @@ async function processRichTextToElements(
             title={refPath}
             onClick={handleClick}
           >
-            {refText || "(deleted reference)"}
+            {refElements.length > 0 ? refElements : "(deleted reference)"}
           </span>
         );
         break;

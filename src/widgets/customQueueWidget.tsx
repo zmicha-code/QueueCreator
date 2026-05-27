@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 // import MyRemNoteButton from '../components/MyRemNoteButton';
 import MyRemNoteButton, { MyRemNoteButtonSmall } from '../components/MyRemnoteButton';
 import { MyRemNoteQueue } from '../components/MyRemnoteQueue';
+import { detectRichTextLatexCloze } from '../components/MyRemnoteRemViewer';
 
 // -> AbstractionAndInheritance
 export const specialNames = ["Collapse Tag Configure Options", "Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Alias", "Aliases", "Bullet Icon"]; // , "Definition", "Eigenschaften"
@@ -961,12 +962,33 @@ async function collectReferencingFlashcards(
   }
 }
 
+// Returns true if the rem is a cloze flashcard (text contains LaTeX with
+// {{cx::...}} syntax). rem.text is a local property — zero SDK calls.
+function isClozeFlashcard(rem: Rem): boolean {
+  return detectRichTextLatexCloze(rem.text);
+}
+
 // Collect cards from a single flashcard rem under Eigenschaften.
+// Cloze flashcards can also carry direct properties, regular properties, and an
+// Eigenschaften descriptor just like regular rems — all are collected here.
 async function getCardsOfFlashcard(
   plugin: RNPlugin, rem: Rem, results: SearchData[], searchOptions: SearchOptions, ctx: CardCollectionContext
 ): Promise<void> {
   await collectFlashcardToCtx(plugin, rem, results, ctx);
 
+  // Only cloze flashcards carry properties and Eigenschaften. rem.text is a
+  // local property — this check is synchronous with zero extra SDK calls.
+  if (isClozeFlashcard(rem)) {
+    if (searchOptions.includeEigenschaften) {
+      results.push(...await getCardsOfEigenschaften(plugin, rem, searchOptions, ctx));
+    }
+    if (!searchOptions.skipProperties) {
+      results.push(...await getCardsOfDirectProperties(plugin, rem, searchOptions, ctx));
+      results.push(...await getCardsOfProperties(plugin, rem, searchOptions, ctx));
+    }
+  }
+
+  // Cloze flashcards can have descendants (equations)
   if (searchOptions.includeDescendants) {
     const referencingRems = await cRemsReferencingThis(rem, ctx.cache);
     for (const ref of referencingRems) {
@@ -983,7 +1005,7 @@ async function getCardsOfFlashcard(
   if (searchOptions.includeReferencedCard) {
     await collectReferencedFlashcards(plugin, rem, results, ctx);
   }
-  
+
   if(searchOptions.includeReferencingCard) {
     await collectReferencingFlashcards(plugin, rem, results, ctx);
   }
@@ -1143,7 +1165,9 @@ async function getCardsOfDescendants(
     // Must be before isDocument() — a flashcard can also be a document
     if (await isFlashcard(plugin, child, ctx.cache)) {
       ctx.processedRemIds.add(child._id);
-      await collectFlashcardToCtx(plugin, child, results, ctx);
+      // Use getCardsOfFlashcard so cloze flashcards' own properties and
+      // Eigenschaften subtrees are collected, not just their own cards.
+      await getCardsOfFlashcard(plugin, child, results, searchOptions, ctx);
       continue;
     }
 

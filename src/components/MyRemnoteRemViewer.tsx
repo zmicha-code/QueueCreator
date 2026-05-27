@@ -17,40 +17,83 @@ export interface ClozeParseResult {
 }
 
 /**
- * Regex to detect cloze syntax in LaTeX: {{c1::content}}, {{c2::content}}, etc.
- * The (?!\}) negative lookahead ensures we match the final }} not followed by another },
- * which correctly handles LaTeX nested braces like \frac{F}{A}}} where the last } is from {A}.
- */
-const CLOZE_PATTERN = /\{\{c(\d+)::([\s\S]*?)\}\}(?!\})/g;
-
-/**
  * Detects if a LaTeX string contains cloze syntax ({{c1::...}}, {{c2::...}}, etc.)
  */
 export function detectLatexCloze(latexCode: string): boolean {
   return /\{\{c\d+::/.test(latexCode);
 }
 
+interface ClozeMatch {
+  start: number;
+  end: number;
+  id: number;
+  content: string;
+}
+
+/**
+ * Finds all cloze markers in a LaTeX string using brace-depth tracking.
+ * Unlike a regex approach, this correctly handles nested LaTeX braces inside
+ * cloze content (e.g. {{c1::{\frac {\Delta _{\text{vap}}H}{R\cdot T^{2}}}}}).
+ */
+function findClozeMatches(str: string): ClozeMatch[] {
+  const matches: ClozeMatch[] = [];
+  let i = 0;
+
+  while (i < str.length - 4) {
+    if (str[i] === '{' && str[i+1] === '{' && str[i+2] === 'c') {
+      let j = i + 3;
+      while (j < str.length && str[j] >= '0' && str[j] <= '9') j++;
+
+      if (j > i + 3 && j + 1 < str.length && str[j] === ':' && str[j+1] === ':') {
+        const id = parseInt(str.slice(i + 3, j), 10);
+        const contentStart = j + 2;
+        let depth = 0;
+        let k = contentStart;
+        let found = false;
+
+        while (k < str.length) {
+          if (str[k] === '{') {
+            depth++;
+            k++;
+          } else if (str[k] === '}') {
+            if (depth === 0) {
+              // At depth 0, a second } means we've found the cloze closer
+              if (k + 1 < str.length && str[k+1] === '}') {
+                matches.push({ start: i, end: k + 2, id, content: str.slice(contentStart, k) });
+                i = k + 2;
+                found = true;
+                break;
+              } else {
+                k++; // unmatched single } at depth 0 — skip
+              }
+            } else {
+              depth--;
+              k++;
+            }
+          } else {
+            k++;
+          }
+        }
+
+        if (found) continue;
+      }
+    }
+    i++;
+  }
+
+  return matches;
+}
+
 /**
  * Parses LaTeX cloze syntax and returns question/answer versions.
+ * Uses brace-depth tracking to correctly handle nested LaTeX braces.
  * - Question version: cloze content replaced with \cdots placeholder
  * - Answer version: cloze markers stripped, content preserved
  */
 export function parseLatexCloze(latexCode: string): ClozeParseResult {
-  const clozeIds: number[] = [];
-  let hasCloze = false;
-  
-  // First pass: collect cloze IDs
-  let match;
-  const tempRegex = /\{\{c(\d+)::([\s\S]*?)\}\}(?!\})/g;
-  while ((match = tempRegex.exec(latexCode)) !== null) {
-    hasCloze = true;
-    const clozeId = parseInt(match[1], 10);
-    if (!clozeIds.includes(clozeId)) {
-      clozeIds.push(clozeId);
-    }
-  }
-  
-  if (!hasCloze) {
+  const matches = findClozeMatches(latexCode);
+
+  if (matches.length === 0) {
     return {
       hasCloze: false,
       clozeIds: [],
@@ -58,16 +101,22 @@ export function parseLatexCloze(latexCode: string): ClozeParseResult {
       answerVersion: latexCode,
     };
   }
-  
-  // Question version: replace cloze content with placeholder
-  const questionVersion = latexCode.replace(CLOZE_PATTERN, '\\cdots');
-  
-  // Answer version: remove cloze markers but keep content
-  const answerVersion = latexCode.replace(CLOZE_PATTERN, '$2');
-  
+
+  const clozeIds = [...new Set(matches.map(m => m.id))].sort((a, b) => a - b);
+
+  // Build versions by replacing from end to start (preserves string positions)
+  let questionVersion = latexCode;
+  let answerVersion = latexCode;
+  const sorted = [...matches].sort((a, b) => b.start - a.start);
+
+  for (const match of sorted) {
+    questionVersion = questionVersion.slice(0, match.start) + '\\cdots' + questionVersion.slice(match.end);
+    answerVersion  = answerVersion.slice(0, match.start)  + match.content + answerVersion.slice(match.end);
+  }
+
   return {
-    hasCloze,
-    clozeIds: clozeIds.sort((a, b) => a - b),
+    hasCloze: true,
+    clozeIds,
     questionVersion,
     answerVersion,
   };

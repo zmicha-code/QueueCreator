@@ -11,7 +11,7 @@ import {
 } from "@remnote/plugin-sdk";
 import { useState, useEffect, useCallback } from "react";
 import { SearchData, getCleanTags, getRemText } from "../widgets/customQueueWidget";
-import { MyRemNoteButtonSmall } from "./MyRemnoteButton";
+import { MyRemNoteButtonSmall, MyRemNoteButtonSmallById } from "./MyRemnoteButton";
 import { MyRemnoteRemViewer, extractHintFromBackText, detectRichTextLatexCloze } from "./MyRemnoteRemViewer";
 
 interface MyRemNoteQueueProps {
@@ -949,7 +949,7 @@ export function MyRemNoteQueue({
                     {queuePosition + 1}
                   </td>
                   <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                    <MyRemNoteButtonSmall text={c.text} onClick={async () => { openRem(c.id); }} />
+                    <MyRemNoteButtonSmallById remId={c.id} onClick={() => openRem(c.id)} />
                   </td>
                   <td style={{ border: "1px solid #ddd", padding: 8 }}>{formatMilliseconds(c.nextDate - Date.now())}</td>
                   <td style={{ border: "1px solid #ddd", padding: 8 }}>{c.interval}</td>

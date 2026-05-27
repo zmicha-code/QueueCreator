@@ -116,6 +116,8 @@ interface MyRemnoteRemViewerProps {
    * - 'none' or undefined: Render LaTeX as-is (may break KaTeX)
    */
   clozeMode?: 'question' | 'answer' | 'none';
+  /** Whether to show the bullet point indicator (default: true) */
+  showBullet?: boolean;
 }
 
 /**
@@ -627,6 +629,7 @@ export function MyRemnoteRemViewer({
   showHint = 'none',
   externalHint,
   clozeMode,
+  showBullet = true,
 }: MyRemnoteRemViewerProps) {
   const plugin = usePlugin();
   const [content, setContent] = useState<ReactNode[]>([]);
@@ -755,17 +758,19 @@ export function MyRemnoteRemViewer({
   return (
     <div style={{ ...baseStyle, ...indentStyle }} className={className}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
-        <svg 
-          width="6" 
-          height="6" 
-          viewBox="0 0 6 6" 
-          style={{ 
-            flexShrink: 0, 
-            marginTop: "0.5em",
-          }}
-        >
-          <circle cx="3" cy="3" r="3" fill="currentColor" />
-        </svg>
+        {showBullet && (
+          <svg 
+            width="6" 
+            height="6" 
+            viewBox="0 0 6 6" 
+            style={{ 
+              flexShrink: 0, 
+              marginTop: "0.5em",
+            }}
+          >
+            <circle cx="3" cy="3" r="3" fill="currentColor" />
+          </svg>
+        )}
         <div style={{ flex: 1 }}>
           {content}
           {hintText && (

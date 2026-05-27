@@ -1,4 +1,5 @@
 import React from 'react';
+import { MyRemnoteRemViewer } from './MyRemnoteRemViewer';
 
 interface MyRemNoteButtonProps {
   img?: string; // SVG path string
@@ -76,3 +77,41 @@ export const MyRemNoteButtonSmall: React.FC<MyRemNoteButtonProps> = ({ img, text
 };
 
 export default MyRemNoteButton;
+
+interface MyRemNoteButtonSmallByIdProps {
+  /** The ID of the rem whose content to display as the button label */
+  remId: string;
+  onClick: () => void;
+  active?: boolean;
+  /** Cloze rendering mode passed to MyRemnoteRemViewer (default: 'answer') */
+  clozeMode?: 'question' | 'answer' | 'none';
+}
+
+export const MyRemNoteButtonSmallById: React.FC<MyRemNoteButtonSmallByIdProps> = ({
+  remId,
+  onClick,
+  active = true,
+  clozeMode = 'answer',
+}) => {
+  return (
+    <button
+      className={`py-1 px-2 rn-clr-background-primary inline-flex items-center rounded-md border-0 ${
+        active
+          ? 'hover:bg-gray-5 text-gray-100'
+          : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+      }`}
+      onClick={active ? onClick : undefined}
+      style={{ height: 'auto', minHeight: '24px', textAlign: 'left' }}
+    >
+      <MyRemnoteRemViewer
+        remId={remId}
+        showChildren={false}
+        showBullet={false}
+        clozeMode={clozeMode}
+        loadingText="..."
+        notFoundText="(not found)"
+        style={{ fontSize: '12px' }}
+      />
+    </button>
+  );
+};

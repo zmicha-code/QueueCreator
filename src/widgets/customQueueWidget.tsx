@@ -966,8 +966,26 @@ async function getCardsOfFlashcard(
   plugin: RNPlugin, rem: Rem, results: SearchData[], searchOptions: SearchOptions, ctx: CardCollectionContext
 ): Promise<void> {
   await collectFlashcardToCtx(plugin, rem, results, ctx);
+
+  if (searchOptions.includeDescendants) {
+    const referencingRems = await cRemsReferencingThis(rem, ctx.cache);
+    for (const ref of referencingRems) {
+      const owner = await resolveExtendsOwner(plugin, ref, ctx.cache);
+      if (!owner || owner._id === rem._id) continue;
+      if (ctx.processedRemIds.has(owner._id)) continue;  // cycle guard
+      if (await isFlashcard(plugin, owner, ctx.cache)) {
+        ctx.processedRemIds.add(owner._id);
+        await getCardsOfFlashcard(plugin, owner, results, searchOptions, ctx);
+      }
+    }
+  }
+
   if (searchOptions.includeReferencedCard) {
     await collectReferencedFlashcards(plugin, rem, results, ctx);
+  }
+  
+  if(searchOptions.includeReferencingCard) {
+    await collectReferencingFlashcards(plugin, rem, results, ctx);
   }
 }
 

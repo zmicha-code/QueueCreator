@@ -59,6 +59,14 @@ async function onActivate(plugin: ReactRNPlugin) {
     }
   );  
 
+  await plugin.app.registerCommand({
+    id: 'export-hierarchy-xml',
+    name: 'Export Hierarchy to XML',
+    action: async () => {
+      plugin.window.openWidgetInPane('exportWidget');
+    },
+  });
+
   const platform = await plugin.app.getPlatform();
 
   if (platform === 'app') {
@@ -66,8 +74,14 @@ async function onActivate(plugin: ReactRNPlugin) {
       dimensions: { height: 'auto', width: '100%' },
       widgetTabIcon: "https://i.imgur.com/nGwgOpN.png"
     });
+    await plugin.app.registerWidget('exportWidget', WidgetLocation.RightSidebar, {
+      dimensions: { height: 'auto', width: '100%' },
+    });
   } else {
     await plugin.app.registerWidget('customQueueWidget', WidgetLocation.Pane, {
+      dimensions: { height: 'auto', width: '100%' },
+    });
+    await plugin.app.registerWidget('exportWidget', WidgetLocation.Pane, {
       dimensions: { height: 'auto', width: '100%' },
     });
     await plugin.app.registerCommand({

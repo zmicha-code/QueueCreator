@@ -8,6 +8,7 @@ function ExportWidget() {
   const [status, setStatus] = useState('');
   const [remName, setRemName] = useState('');
   const [maxDepth, setMaxDepth] = useState(5);
+  const [includeEigenschaften, setIncludeEigenschaften] = useState(false);
   const [xmlContent, setXmlContent] = useState('');
 
   const focusedRem = useTracker(async (reactPlugin) => {
@@ -25,7 +26,7 @@ function ExportWidget() {
     setXmlContent('');
     setStatus('Building…');
     try {
-      const xml = await buildRemXml(plugin, focusedRem, new Set(), 0, maxDepth);
+      const xml = await buildRemXml(plugin, focusedRem, new Set(), 0, maxDepth, includeEigenschaften);
       setXmlContent(xml);
 
       try {
@@ -89,6 +90,16 @@ function ExportWidget() {
     }}>
       <div style={{ fontSize: '0.82em', opacity: 0.65, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {focusedRem ? `Rem: ${remName}` : 'Focus a rem to export'}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85em' }}>
+        <input
+          id="include-eigenschaften"
+          type="checkbox"
+          checked={includeEigenschaften}
+          onChange={e => setIncludeEigenschaften(e.target.checked)}
+        />
+        <label htmlFor="include-eigenschaften" style={{ whiteSpace: 'nowrap' }}>Include Eigenschaften</label>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85em' }}>

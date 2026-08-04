@@ -1,5 +1,5 @@
 import { RNPlugin, Rem, RemType, RichTextInterface } from '@remnote/plugin-sdk';
-import { getExtendsParents, getCleanChildrenAll } from './hierarchyUtils';
+import { getExtendsParents, getCleanChildren } from './hierarchyUtils';
 
 // No side effects in this file — safe to import from any widget or index context.
 
@@ -42,18 +42,21 @@ export async function buildRemXml(
   rem: Rem,
   visited: Set<string>,
   depth: number,
-  maxDepth: number = 0
+  maxDepth: number = 0,
+  includeEigenschaften: boolean = true
 ): Promise<string> {
   if (visited.has(rem._id)) return '';
   visited.add(rem._id);
 
   const indent = '  '.repeat(depth);
-  const [name, type, isDoc, extendsParents, children] = await Promise.all([
-    xmlGetRemText(plugin, rem),
+  const name = await xmlGetRemText(plugin, rem);
+  if (!includeEigenschaften && name.trim().toLowerCase() === 'eigenschaften') return '';
+
+  const [type, isDoc, extendsParents, children] = await Promise.all([
     rem.getType(),
     rem.isDocument(),
     getExtendsParents(plugin, rem),
-    getCleanChildrenAll(plugin, rem),
+    getCleanChildren(plugin, rem),
   ]);
 
   let typeAttr: string;
@@ -77,7 +80,7 @@ export async function buildRemXml(
   }
 
   const childXmls = await Promise.all(
-    children.map(child => buildRemXml(plugin, child, visited, depth + 1, maxDepth))
+    children.map(child => buildRemXml(plugin, child, visited, depth + 1, maxDepth, includeEigenschaften))
   );
   const childrenXml = childXmls.filter(s => s.length > 0).join('\n');
 

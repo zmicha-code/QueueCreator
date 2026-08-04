@@ -10,7 +10,7 @@ import {
   RemType,
 } from "@remnote/plugin-sdk";
 import { useState, useEffect, useCallback } from "react";
-import { SearchData, getCleanTags, getRemText } from "../widgets/customQueueWidget";
+import { SearchData, getCleanTags, getRemText, getCleanChildren } from "../widgets/customQueueWidget";
 import { MyRemNoteButtonSmall, MyRemNoteButtonSmallById } from "./MyRemnoteButton";
 import { MyRemnoteRemViewer, extractHintFromBackText, detectRichTextLatexCloze } from "./MyRemnoteRemViewer";
 
@@ -696,7 +696,7 @@ export function MyRemNoteQueue({
         
         // Load children and their text
         //console.log('[DEBUG loadContent] step 3: getChildrenRem | rem._id:', currentCardData.rem?._id);
-        const children = await currentCardData.rem.getChildrenRem();
+        const children = await getCleanChildren(plugin, currentCardData.rem);
         setChildrenRems(children);
         
         // Categorize children into regular and extra card detail

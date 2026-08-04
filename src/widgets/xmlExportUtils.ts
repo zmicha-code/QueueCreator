@@ -29,6 +29,116 @@ export async function xmlGetRemText(plugin: RNPlugin, rem: Rem | undefined): Pro
 }
 
 
+/**
+ * Builds a nested XML structure that shows the path from the root ancestor
+ * down to `rem`. Each ancestor in the path is expanded to show its direct
+ * children/properties as leaves, but only the child that leads toward `rem`
+ * is nested further. `rem` itself is the innermost element with its direct
+ * children shown as leaves (no recursion).
+ */
+export async function buildParentHierarchyXml(
+  plugin: RNPlugin,
+  rem: Rem,
+  includeEigenschaften: boolean = true
+): Promise<string> {
+  // Build chain upward: [focusedRem, parent, grandparent, ..., root]
+  const chain: Rem[] = [rem];
+  const seen = new Set<string>([rem._id]);
+  let current: Rem | null | undefined = await rem.getParentRem();
+  while (current) {
+    if (seen.has(current._id)) break;
+    seen.add(current._id);
+    chain.push(current);
+    current = await current.getParentRem();
+  }
+  // Reverse to render top-down: [root, ..., parent, focusedRem]
+  chain.reverse();
+  return renderChainLevel(plugin, chain, 0, 0, includeEigenschaften);
+}
+
+/** Renders `chain[chainIndex]` with its direct children as leaves, except for
+ *  `chain[chainIndex + 1]` which is recursively expanded as the path child. */
+async function renderChainLevel(
+  plugin: RNPlugin,
+  chain: Rem[],
+  chainIndex: number,
+  depth: number,
+  includeEigenschaften: boolean
+): Promise<string> {
+  const rem = chain[chainIndex];
+  const pathChild = chainIndex + 1 < chain.length ? chain[chainIndex + 1] : undefined;
+
+  const indent = '  '.repeat(depth);
+  const name = await xmlGetRemText(plugin, rem);
+  if (!includeEigenschaften && name.trim().toLowerCase() === 'eigenschaften') return '';
+
+  const [type, isDoc, extendsParents, children] = await Promise.all([
+    rem.getType(),
+    rem.isDocument(),
+    getExtendsParents(plugin, rem),
+    getCleanChildren(plugin, rem),
+  ]);
+
+  let typeAttr: string;
+  if (type === RemType.DESCRIPTOR) typeAttr = 'directProperty';
+  else if (isDoc) typeAttr = 'property';
+  else typeAttr = 'child';
+
+  const extendsNames = await Promise.all(extendsParents.map(p => xmlGetRemText(plugin, p)));
+  const extendsAttr = extendsNames.length > 0
+    ? ` extends="${escapeXmlAttr(extendsNames.join(','))}"` : '';
+
+  const openTag = `${indent}<rem name="${escapeXmlAttr(name)}"${extendsAttr} type="${typeAttr}">`;
+
+  if (children.length === 0) return `${openTag}</rem>`;
+
+  const childXmls: string[] = [];
+  for (const child of children) {
+    if (pathChild && child._id === pathChild._id) {
+      // This child leads toward the focused rem — expand it recursively.
+      const xml = await renderChainLevel(plugin, chain, chainIndex + 1, depth + 1, includeEigenschaften);
+      if (xml) childXmls.push(xml);
+    } else {
+      // Sibling — render as a flat leaf (no children).
+      const xml = await renderRemLeaf(plugin, child, depth + 1, includeEigenschaften);
+      if (xml) childXmls.push(xml);
+    }
+  }
+
+  const childrenXml = childXmls.join('\n');
+  if (!childrenXml) return `${openTag}</rem>`;
+  return `${openTag}\n${childrenXml}\n${indent}</rem>`;
+}
+
+/** Renders a single rem as a self-contained leaf tag with no children. */
+async function renderRemLeaf(
+  plugin: RNPlugin,
+  rem: Rem,
+  depth: number,
+  includeEigenschaften: boolean
+): Promise<string> {
+  const indent = '  '.repeat(depth);
+  const name = await xmlGetRemText(plugin, rem);
+  if (!includeEigenschaften && name.trim().toLowerCase() === 'eigenschaften') return '';
+
+  const [type, isDoc, extendsParents] = await Promise.all([
+    rem.getType(),
+    rem.isDocument(),
+    getExtendsParents(plugin, rem),
+  ]);
+
+  let typeAttr: string;
+  if (type === RemType.DESCRIPTOR) typeAttr = 'directProperty';
+  else if (isDoc) typeAttr = 'property';
+  else typeAttr = 'child';
+
+  const extendsNames = await Promise.all(extendsParents.map(p => xmlGetRemText(plugin, p)));
+  const extendsAttr = extendsNames.length > 0
+    ? ` extends="${escapeXmlAttr(extendsNames.join(','))}"` : '';
+
+  return `${indent}<rem name="${escapeXmlAttr(name)}"${extendsAttr} type="${typeAttr}"></rem>`;
+}
+
 export function escapeXmlAttr(str: string): string {
   return str
     .replace(/&/g, '&amp;')

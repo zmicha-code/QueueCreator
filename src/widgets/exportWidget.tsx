@@ -1,6 +1,6 @@
 import { usePlugin, renderWidget, useTracker } from '@remnote/plugin-sdk';
 import { useState, useEffect } from 'react';
-import { buildRemXml, xmlGetRemText } from './xmlExportUtils';
+import { buildRemXml, buildParentHierarchyXml, xmlGetRemText } from './xmlExportUtils';
 
 function ExportWidget() {
   const plugin = usePlugin();
@@ -20,6 +20,38 @@ function ExportWidget() {
     xmlGetRemText(plugin, focusedRem).then(n => setRemName(n || '(unnamed)'));
   }, [focusedRem?._id]);
 
+  const copyXml = async (xml: string) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(xml);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+      setStatus('Ready – copied to clipboard');
+      await plugin.app.toast('XML copied to clipboard!');
+    } catch {
+      const fallback = (): boolean => {
+        const ta = document.createElement('textarea');
+        ta.value = xml;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      };
+      if (fallback()) {
+        setStatus('Ready – copied to clipboard');
+        await plugin.app.toast('XML copied to clipboard!');
+      } else {
+        setStatus('Clipboard failed – use the text field below');
+      }
+    }
+  };
+
   const handleExport = async () => {
     if (!focusedRem || exporting) return;
     setExporting(true);
@@ -28,39 +60,26 @@ function ExportWidget() {
     try {
       const xml = await buildRemXml(plugin, focusedRem, new Set(), 0, maxDepth, includeEigenschaften);
       setXmlContent(xml);
-
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(xml);
-        } else {
-          throw new Error('Clipboard API unavailable');
-        }
-        setStatus('Ready – copied to clipboard');
-        await plugin.app.toast('XML copied to clipboard!');
-      } catch {
-        const fallback = (): boolean => {
-          const ta = document.createElement('textarea');
-          ta.value = xml;
-          ta.style.position = 'fixed';
-          ta.style.left = '-9999px';
-          ta.style.top = '-9999px';
-          document.body.appendChild(ta);
-          ta.focus();
-          ta.select();
-          const ok = document.execCommand('copy');
-          document.body.removeChild(ta);
-          return ok;
-        };
-        const ok = fallback();
-        if (ok) {
-          setStatus('Ready – copied to clipboard');
-          await plugin.app.toast('XML copied to clipboard!');
-        } else {
-          setStatus('Clipboard failed – use the text field below');
-        }
-      }
+      await copyXml(xml);
     } catch (err) {
       console.error('XML export error:', err);
+      setStatus('Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleParentExport = async () => {
+    if (!focusedRem || exporting) return;
+    setExporting(true);
+    setXmlContent('');
+    setStatus('Building…');
+    try {
+      const xml = await buildParentHierarchyXml(plugin, focusedRem, includeEigenschaften);
+      setXmlContent(xml);
+      await copyXml(xml);
+    } catch (err) {
+      console.error('XML parent export error:', err);
       setStatus('Export failed');
     } finally {
       setExporting(false);
@@ -78,6 +97,19 @@ function ExportWidget() {
   };
 
   const canExport = !!focusedRem && !exporting;
+
+  const btnStyle = (enabled: boolean) => ({
+    padding: '7px 14px',
+    borderRadius: '6px',
+    border: '1px solid var(--border-color, #ccc)',
+    background: enabled ? 'var(--interactive-color, #0066cc)' : 'transparent',
+    color: enabled ? '#fff' : 'inherit',
+    cursor: enabled ? 'pointer' : 'not-allowed',
+    fontSize: '0.9em',
+    fontFamily: 'inherit',
+    opacity: enabled ? 1 : 0.4,
+    transition: 'opacity 0.15s',
+  });
 
   return (
     <div style={{
@@ -125,23 +157,12 @@ function ExportWidget() {
         </select>
       </div>
 
-      <button
-        onClick={handleExport}
-        disabled={!canExport}
-        style={{
-          padding: '7px 14px',
-          borderRadius: '6px',
-          border: '1px solid var(--border-color, #ccc)',
-          background: canExport ? 'var(--interactive-color, #0066cc)' : 'transparent',
-          color: canExport ? '#fff' : 'inherit',
-          cursor: canExport ? 'pointer' : 'not-allowed',
-          fontSize: '0.9em',
-          fontFamily: 'inherit',
-          opacity: canExport ? 1 : 0.4,
-          transition: 'opacity 0.15s',
-        }}
-      >
+      <button onClick={handleExport} disabled={!canExport} style={btnStyle(canExport)}>
         {exporting ? 'Exporting…' : 'Export Hierarchy to XML'}
+      </button>
+
+      <button onClick={handleParentExport} disabled={!canExport} style={btnStyle(canExport)}>
+        {exporting ? 'Exporting…' : 'Export Parent Hierarchy to XML'}
       </button>
 
       {status && (

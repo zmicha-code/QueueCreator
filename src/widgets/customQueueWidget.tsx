@@ -26,7 +26,7 @@ export {
   getExtendsDescriptor, getExtendsParents,
   isReferencingRem,
   getImportsDescriptor, getImportsChildren,
-  getCleanChildrenAll, getCleanChildrenOnly,
+  getCleanChildren, getCleanChildrenAll, getCleanChildrenOnly,
 } from './hierarchyUtils';
 
 

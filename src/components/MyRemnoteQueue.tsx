@@ -9,7 +9,7 @@ import {
   CardType,
   RemType,
 } from "@remnote/plugin-sdk";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { SearchData, getCleanTags, getRemText, getCleanChildren } from "../widgets/customQueueWidget";
 import { MyRemNoteButtonSmall, MyRemNoteButtonSmallById } from "./MyRemnoteButton";
 import { MyRemnoteRemViewer, extractHintFromBackText, detectRichTextLatexCloze } from "./MyRemnoteRemViewer";
@@ -229,17 +229,27 @@ const tagChipStyle: React.CSSProperties = {
 
 // Helper function to get the hierarchical path of a Rem
 async function getRemPath(plugin: RNPlugin, rem: Rem): Promise<{ id: string; text: string; isDocument: boolean }[]> {
+  const _t0 = performance.now();
   const path: { id: string; text: string; isDocument: boolean }[] = [];
   let currentRem: Rem | undefined = rem;
+  let _depth = 0;
   
   // Traverse up the hierarchy
   while (currentRem) {
+    const _td0 = performance.now();
     const text = await getRemText(plugin, currentRem);
+    console.log(`[TIMING] getRemPath d=${_depth} getRemText: ${(performance.now()-_td0).toFixed(1)}ms`);
+    const _td1 = performance.now();
     const isDocument = await currentRem.isDocument();
+    console.log(`[TIMING] getRemPath d=${_depth} isDocument: ${(performance.now()-_td1).toFixed(1)}ms`);
     path.unshift({ id: currentRem._id, text: text || "(untitled)", isDocument });
+    const _td2 = performance.now();
     currentRem = await currentRem.getParentRem();
+    console.log(`[TIMING] getRemPath d=${_depth} getParentRem: ${(performance.now()-_td2).toFixed(1)}ms`);
+    _depth++;
   }
   
+  console.log(`[TIMING] getRemPath TOTAL (${_depth} levels): ${(performance.now()-_t0).toFixed(1)}ms`);
   return path;
 }
 
@@ -433,12 +443,49 @@ export function MyRemNoteQueue({
   // Initialize queue order when cards prop changes
   useEffect(() => {
     const enabledCards = cards.filter((c) => c.card !== null) as { rem: Rem; card: Card }[];
+
+    // Detect if this is a genuinely new queue (different card IDs) vs a reorder from skip/again.
+    // Sorting makes the hash order-independent so reorders are ignored.
+    const cardIdsHash = enabledCards.map(c => c.card!._id).sort().join(',');
+    const isNewQueue = cardIdsHash !== cardIdsHashRef.current;
+    cardIdsHashRef.current = cardIdsHash;
+
     setQueueOrder(enabledCards);
     // Use initialIndex on first load, clamp to valid range (allow length to restore completion state)
     const validIndex = Math.min(Math.max(0, initialIndex), enabledCards.length);
     setCurrentIndex(validIndex);
     setInitializedFromCards(true);
-  }, [cards]);
+
+    // Only rebuild the full cardsData table when a genuinely new queue arrives.
+    // Reorders (skip/again) update cardsData locally without a full rebuild.
+    if (isNewQueue && enabledCards.length > 0) {
+      const gen = ++cardsDataGenRef.current;
+      void (async () => {
+        const data: { id: string, cardId: string, text: string, nextDate: number, interval: string, intervalMs: number, lastRatings: string[] }[] = [];
+        for (const item of enabledCards) {
+          const text = await getRemText(plugin, item.rem);
+          const freshCard = await plugin.card.findOne(item.card._id);
+          const cardToUse = freshCard || item.card;
+          const lastInterval = getLastInterval(cardToUse.repetitionHistory);
+          const lastRatings = getLastRatingStr(cardToUse.repetitionHistory, 3);
+          const interval = lastInterval ? formatMilliseconds(lastInterval.workingInterval) : '';
+          data.push({
+            id: item.rem._id,
+            cardId: item.card._id,
+            text,
+            nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0,
+            interval,
+            intervalMs: lastInterval ? lastInterval.workingInterval : 0,
+            lastRatings,
+          });
+        }
+        // Only apply if this is still the most recent build (no newer queue arrived)
+        if (gen === cardsDataGenRef.current) {
+          setCardsData(data);
+        }
+      })();
+    }
+  }, [cards]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answerState, setAnswerState] = useState<AnswerState>("question");
@@ -446,8 +493,6 @@ export function MyRemNoteQueue({
   const [regularChildren, setRegularChildren] = useState<Rem[]>([]);
   const [extraDetailChildren, setExtraDetailChildren] = useState<Rem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  // Render key to force complete re-render of RemViewer components
-  const [renderKey, setRenderKey] = useState(0);
   // Plain text for testing (to debug RemViewer rendering issue)
   const [questionText, setQuestionText] = useState("");
   const [answerTexts, setAnswerTexts] = useState<string[]>([]);
@@ -457,9 +502,7 @@ export function MyRemNoteQueue({
   const [sortColumn, setSortColumn] = useState<'queue' | 'text' | 'nextDate' | 'interval' | 'lastRating'>('queue');
   const [sortAscending, setSortAscending] = useState<boolean>(true);
   const [cardsData, setCardsData] = useState<{ id: string, cardId: string, text: string, nextDate: number, interval: string, intervalMs: number, lastRatings: string[] }[]>([]);
-  // Key to force refresh of table data after rating
-  const [tableRefreshKey, setTableRefreshKey] = useState(0);
-  
+
   // Hierarchical path (breadcrumb) for current card
   const [currentPath, setCurrentPath] = useState<{ id: string; text: string; isDocument: boolean }[]>([]);
   // Whether the breadcrumb path is revealed
@@ -493,36 +536,18 @@ export function MyRemNoteQueue({
   // Property parent LaTeX cloze state: when the property parent's text has cloze
   const [propertyParentHasLatexCloze, setPropertyParentHasLatexCloze] = useState<boolean>(false);
 
-  const currentCardData = queueOrder[currentIndex];
+  // Track whether the current cards prop represents a new queue (different card IDs)
+  // vs a reorder (skip/again from parent). Used to skip unnecessary table rebuilds.
+  const cardIdsHashRef = useRef<string>("");
+  // Generation counter — incremented on each new queue build to cancel stale async loads
+  const cardsDataGenRef = useRef<number>(0);
+  // Pending rating: stored when a card is rated, fired after the next card's loadContent
+  // finishes so updateCardRepetitionStatus doesn't block bridge calls during content load.
+  const pendingRatingRef = useRef<{ cardId: string; score: QueueInteractionScore } | null>(null);
+  // True while a deferred updateCardRepetitionStatus call is in-flight; disables rating buttons.
+  const [isRatingInFlight, setIsRatingInFlight] = useState(false);
 
-  // Load cards data for table display
-  useEffect(() => {
-    async function loadCardsData() {
-      const data: { id: string, cardId: string, text: string, nextDate: number, interval: string, intervalMs: number, lastRatings: string[] }[] = [];
-      for (const item of queueOrder) {
-        const text = await getRemText(plugin, item.rem);
-        // Re-fetch card from database to get fresh repetitionHistory
-        const freshCard = await plugin.card.findOne(item.card._id);
-        const cardToUse = freshCard || item.card;
-        const lastInterval = getLastInterval(cardToUse.repetitionHistory);
-        const lastRatings = getLastRatingStr(cardToUse.repetitionHistory, 3);
-        const interval = lastInterval ? formatMilliseconds(lastInterval.workingInterval) : '';
-        data.push({
-          id: item.rem._id,
-          cardId: item.card._id,
-          text,
-          nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0,
-          interval,
-          intervalMs: lastInterval ? lastInterval.workingInterval : 0,
-          lastRatings
-        });
-      }
-      setCardsData(data);
-    }
-    if (queueOrder.length > 0) {
-      loadCardsData();
-    }
-  }, [queueOrder, plugin, tableRefreshKey]);
+  const currentCardData = queueOrder[currentIndex];
 
   // Sorting handlers
   const handleSort = (column: 'queue' | 'text' | 'nextDate' | 'interval' | 'lastRating') => {
@@ -541,6 +566,11 @@ export function MyRemNoteQueue({
   useEffect(() => {
     console.log('[Sort] Sort state updated → sortColumn:', sortColumn, '| sortAscending:', sortAscending);
   }, [sortColumn, sortAscending]);
+
+  // Timing: log whenever currentIndex changes
+  useEffect(() => {
+    console.log(`[TIMING] currentIndex changed → ${currentIndex}`);
+  }, [currentIndex]);
 
   const ratingOrder: Record<string, number> = {
     'Easily recalled': 4,
@@ -611,10 +641,9 @@ export function MyRemNoteQueue({
 
   // Load children when card changes
   useEffect(() => {
-    // Immediately clear previous content to avoid showing stale data
-    setChildrenRems([]);
-    setRegularChildren([]);
-    setExtraDetailChildren([]);
+    // Do NOT clear childrenRems/regularChildren/extraDetailChildren here — keep the
+    // previous card's answer mounted (hidden via display:none) so RemViewers stay
+    // alive while the new card loads. They are replaced once loadContent finishes.
     setQuestionText("");
     setAnswerTexts([]);
     setCurrentPath([]);
@@ -626,101 +655,133 @@ export function MyRemNoteQueue({
     setPropertyParentRemId(undefined);
     setHasLatexCloze(false);
     setPropertyParentHasLatexCloze(false);
-    setIsLoading(true);
+    // Do not set isLoading=true here — only the initial render uses the loading gate.
+    // Subsequent card switches show content inline via RemViewer's own loading states.
     
     async function loadContent() {
-      if (!currentCardData) {
+      if (!currentCardData || !currentCardData.card || !currentCardData.rem?._id) {
+        // Fire any deferred rating (e.g., last card in queue rated then queue completes)
+        const _pending0 = pendingRatingRef.current;
+        if (_pending0) {
+          pendingRatingRef.current = null;
+          void (async () => {
+            try {
+              const fc = await plugin.card.findOne(_pending0.cardId);
+              if (fc) await fc.updateCardRepetitionStatus(_pending0.score);
+              void updateSingleCardData(_pending0.cardId);
+            } catch (e) { console.error("Error updating card status (deferred):", e); }
+            finally { setIsRatingInFlight(false); }
+          })();
+        }
         setIsLoading(false);
         return;
       }
 
+      const _lc_t0 = performance.now();
+      const _lc_remId = currentCardData.rem._id;
+      console.log(`[TIMING] loadContent START remId=...${_lc_remId.slice(-6)} index=${currentIndex}`);
+
       try {
-        // Guard: skip if card or rem is malformed
-        if (!currentCardData.card || !currentCardData.rem?._id) {
+        // Synchronous operations (local properties, no SDK calls)
+        setHasLatexCloze(detectRichTextLatexCloze(currentCardData.rem.text));
+        setParentHint(extractHintFromBackText(currentCardData.rem.backText, 'back'));
+
+        // Round 1: all independent async calls in parallel
+        const _r1_t0 = performance.now();
+        const _r1_t_findOne = performance.now();
+        const _r1_t_getType = performance.now();
+        const _r1_t_getRemText = performance.now();
+        const _r1_t_getRemPath = performance.now();
+        const _r1_t_getCleanTags = performance.now();
+        const _r1_t_getCleanChildren = performance.now();
+        const [freshCard, remType, qText, path, tagRems, children] = await Promise.all([
+          plugin.card.findOne(currentCardData.card._id).then(r => { console.log(`[TIMING] R1 card.findOne: ${(performance.now()-_r1_t_findOne).toFixed(1)}ms`); return r; }),
+          currentCardData.rem.getType().then(r => { console.log(`[TIMING] R1 rem.getType: ${(performance.now()-_r1_t_getType).toFixed(1)}ms`); return r; }),
+          getRemText(plugin, currentCardData.rem).then(r => { console.log(`[TIMING] R1 getRemText: ${(performance.now()-_r1_t_getRemText).toFixed(1)}ms`); return r; }),
+          getRemPath(plugin, currentCardData.rem).then(r => { console.log(`[TIMING] R1 getRemPath: ${(performance.now()-_r1_t_getRemPath).toFixed(1)}ms`); return r; }),
+          getCleanTags(plugin, currentCardData.rem).then(r => { console.log(`[TIMING] R1 getCleanTags: ${(performance.now()-_r1_t_getCleanTags).toFixed(1)}ms`); return r; }),
+          getCleanChildren(plugin, currentCardData.rem).then(r => { console.log(`[TIMING] R1 getCleanChildren: ${(performance.now()-_r1_t_getCleanChildren).toFixed(1)}ms`); return r; }),
+        ]);
+        console.log(`[TIMING] R1 TOTAL: ${(performance.now()-_r1_t0).toFixed(1)}ms`);
+
+        if (!freshCard) {
+          // Fire any deferred rating even on early return
+          const _pending1 = pendingRatingRef.current;
+          if (_pending1) {
+            pendingRatingRef.current = null;
+            void (async () => {
+              try {
+                const fc = await plugin.card.findOne(_pending1.cardId);
+                if (fc) await fc.updateCardRepetitionStatus(_pending1.score);
+                void updateSingleCardData(_pending1.cardId);
+              } catch (e) { console.error("Error updating card status (deferred):", e); }
+              finally { setIsRatingInFlight(false); }
+            })();
+          }
           setIsLoading(false);
           return;
         }
 
-        // Load card type (forward, backward, or cloze)
-        // Re-fetch card from DB to ensure remId is populated (stale card objects can have undefined remId)
-        //console.log('[DEBUG loadContent] step 1: card.getType | card._id:', currentCardData.card?._id, 'rem._id:', currentCardData.rem?._id);
-        const freshCard = await plugin.card.findOne(currentCardData.card._id);
-        if (!freshCard) { setIsLoading(false); return; }
-        const type = await freshCard.getType();
+        // Round 2: calls that depend on round-1 results — run in parallel
+        const _r2_t0 = performance.now();
+        const _r2_t_getType = performance.now();
+        const _r2_t_getParentRem = performance.now();
+        const _r2_t_tagTexts = performance.now();
+        const _r2_t_childData = performance.now();
+        const [type, descriptorParent, tagTexts, childData] = await Promise.all([
+          freshCard.getType().then(r => { console.log(`[TIMING] R2 freshCard.getType: ${(performance.now()-_r2_t_getType).toFixed(1)}ms`); return r; }),
+          remType === RemType.DESCRIPTOR
+            ? currentCardData.rem.getParentRem().then(r => { console.log(`[TIMING] R2 getParentRem: ${(performance.now()-_r2_t_getParentRem).toFixed(1)}ms`); return r; })
+            : Promise.resolve(null as Rem | null | undefined),
+          Promise.all(tagRems.map(tagRem => getRemText(plugin, tagRem))).then(r => { console.log(`[TIMING] R2 tagTexts (${tagRems.length}): ${(performance.now()-_r2_t_tagTexts).toFixed(1)}ms`); return r; }),
+          Promise.all(children.map(async (child) => {
+            if (!child?._id) return { hasExtraCardDetail: false, isDescriptor: true, text: '' };
+            const _tc = performance.now();
+            const [hasExtraCardDetail, childType, childText] = await Promise.all([
+              child.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail),
+              child.getType(),
+              getRemText(plugin, child),
+            ]);
+            console.log(`[TIMING] R2 child[...${child._id.slice(-4)}] hasPowerup+getType+getRemText: ${(performance.now()-_tc).toFixed(1)}ms`);
+            return { hasExtraCardDetail, isDescriptor: childType === RemType.DESCRIPTOR, text: childText };
+          })).then(r => { console.log(`[TIMING] R2 childData (${children.length} children): ${(performance.now()-_r2_t_childData).toFixed(1)}ms`); return r; }),
+        ]);
+        console.log(`[TIMING] R2 TOTAL: ${(performance.now()-_r2_t0).toFixed(1)}ms`);
+
+        // Apply state updates
         setCardType(type);
-        
-        // Detect LaTeX cloze in rem text ({{c1::...}} syntax inside LaTeX blocks)
-        const latexClozeDetected = detectRichTextLatexCloze(currentCardData.rem.text);
-        setHasLatexCloze(latexClozeDetected);
-        
-        // Extract hint from parent rem's backText (card-hint-back)
-        // This is used for both forward cards and backward cards
-        const hint = extractHintFromBackText(currentCardData.rem.backText, 'back');
-        setParentHint(hint);
-        
-        // Check if rem is a descriptor (not extends/implements/Eigenschaften) - if so, show parent as main question
-        //console.log('[DEBUG loadContent] step 2: rem.getType | rem._id:', currentCardData.rem?._id);
-        const remType = await currentCardData.rem.getType();
-        if (remType === RemType.DESCRIPTOR) {
-          const remText = await getRemText(plugin, currentCardData.rem);
-          const excludedDescriptors = ['extends', 'implements', 'eigenschaften'];
-          if (!excludedDescriptors.includes(remText.toLowerCase())) {
-            const parentRem = await currentCardData.rem.getParentRem();
-            if (parentRem) {
-              setIsPropertyCard(true);
-              setPropertyParentRemId(parentRem._id);
-              // Detect if property parent has LaTeX cloze
-              const parentHasCloze = detectRichTextLatexCloze(parentRem.text);
-              setPropertyParentHasLatexCloze(parentHasCloze);
-            }
-          }
-        }
-        
-        // Load question text
-        const qText = await getRemText(plugin, currentCardData.rem);
         setQuestionText(qText);
-        
-        // Load hierarchical path
-        const path = await getRemPath(plugin, currentCardData.rem);
         setCurrentPath(path);
 
-        // Load user-facing tags for the current card
-        const tagRems = await getCleanTags(plugin, currentCardData.rem);
-        const tags = await Promise.all(
-          tagRems.map(async (tagRem) => ({
-            id: tagRem._id,
-            text: await getRemText(plugin, tagRem),
-          }))
-        );
-        setCurrentTags(tags.filter((tag) => tag.text.trim().length > 0));
-        
-        // Load children and their text
-        //console.log('[DEBUG loadContent] step 3: getChildrenRem | rem._id:', currentCardData.rem?._id);
-        const children = await getCleanChildren(plugin, currentCardData.rem);
+        // Handle DESCRIPTOR property card (reuse qText instead of fetching again)
+        if (remType === RemType.DESCRIPTOR) {
+          const excludedDescriptors = ['extends', 'implements', 'eigenschaften'];
+          if (!excludedDescriptors.includes(qText.toLowerCase()) && descriptorParent) {
+            setIsPropertyCard(true);
+            setPropertyParentRemId(descriptorParent._id);
+            setPropertyParentHasLatexCloze(detectRichTextLatexCloze(descriptorParent.text));
+          }
+        }
+
+        // Tags
+        const tags = tagRems.map((tagRem, i) => ({ id: tagRem._id, text: tagTexts[i] }));
+        setCurrentTags(tags.filter(tag => tag.text.trim().length > 0));
+
+        // Children
         setChildrenRems(children);
-        
-        // Categorize children into regular and extra card detail
         const regular: Rem[] = [];
         const extraDetail: Rem[] = [];
-        for (const child of children) {
-          if (!child?._id) continue; // skip malformed child stubs
-          //console.log('[DEBUG loadContent] step 4: child.getType | child._id:', child._id);
-          const hasExtraCardDetail = await child.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail);
-          if (hasExtraCardDetail) {
-            extraDetail.push(child);
-          } else {
-            if(await child.getType() != RemType.DESCRIPTOR)
-              regular.push(child);
+        for (let i = 0; i < children.length; i++) {
+          if (childData[i].hasExtraCardDetail) {
+            extraDetail.push(children[i]);
+          } else if (!childData[i].isDescriptor) {
+            regular.push(children[i]);
           }
         }
         setRegularChildren(regular);
         setExtraDetailChildren(extraDetail);
-        
-        // Load answer texts
-        const texts = await Promise.all(
-          children.map(child => getRemText(plugin, child))
-        );
-        setAnswerTexts(texts);
+        setAnswerTexts(childData.map(cd => cd.text));
+
       } catch (error) {
         console.error("[MyRemNoteQueue] Error loading content:", error);
         setChildrenRems([]);
@@ -730,49 +791,81 @@ export function MyRemNoteQueue({
         setAnswerTexts([]);
         setCurrentTags([]);
       }
+      console.log(`[TIMING] loadContent END remId=...${_lc_remId.slice(-6)} TOTAL: ${(performance.now()-_lc_t0).toFixed(1)}ms`);
       setIsLoading(false);
+      // Fire deferred rating now that the new card's content has loaded
+      const _pending2 = pendingRatingRef.current;
+      if (_pending2) {
+        pendingRatingRef.current = null;
+        void (async () => {
+          try {
+            const _pr_t0 = performance.now();
+            const fc = await plugin.card.findOne(_pending2.cardId);
+            console.log(`[TIMING] pendingRating card.findOne: ${(performance.now()-_pr_t0).toFixed(1)}ms`);
+            if (fc) {
+              const _pr_t1 = performance.now();
+              await fc.updateCardRepetitionStatus(_pending2.score);
+              console.log(`[TIMING] pendingRating updateCardRepetitionStatus: ${(performance.now()-_pr_t1).toFixed(1)}ms`);
+            }
+            void updateSingleCardData(_pending2.cardId);
+          } catch (e) { console.error("Error updating card status (deferred):", e); }
+          finally { setIsRatingInFlight(false); }
+        })();
+      }
     }
 
     loadContent();
     setAnswerState("question");
     setShowHistory(false);
-  }, [currentIndex, currentCardData?.rem._id, renderKey, plugin]);
+  }, [currentIndex, currentCardData?.rem._id, plugin]);
 
   const handleShowAnswer = () => {
     setAnswerState("answer");
   };
 
-  const handleAnswer = async (score: QueueInteractionScore) => {
+  // Update only the single rated card's entry in cardsData (background, non-blocking)
+  const updateSingleCardData = async (cardId: string) => {
+    const _usd_t0 = performance.now();
+    const item = queueOrder.find(i => i.card._id === cardId);
+    if (!item) return;
+    const _usd_t1 = performance.now();
+    const freshCard = await plugin.card.findOne(cardId);
+    console.log(`[TIMING] updateSingleCardData card.findOne: ${(performance.now()-_usd_t1).toFixed(1)}ms`);
+    const cardToUse = freshCard || item.card;
+    const lastInterval = getLastInterval(cardToUse.repetitionHistory);
+    const lastRatings = getLastRatingStr(cardToUse.repetitionHistory, 3);
+    setCardsData(prev => prev.map(c =>
+      c.cardId === cardId ? {
+        ...c,
+        nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0,
+        interval: lastInterval ? formatMilliseconds(lastInterval.workingInterval) : '',
+        intervalMs: lastInterval ? lastInterval.workingInterval : 0,
+        lastRatings,
+      } : c
+    ));
+    console.log(`[TIMING] updateSingleCardData TOTAL: ${(performance.now()-_usd_t0).toFixed(1)}ms`);
+  };
+
+  const handleAnswer = (score: QueueInteractionScore) => {
+    // Store rating to apply after the next card's loadContent finishes,
+    // so updateCardRepetitionStatus doesn't block bridge calls during content load.
     if (currentCardData?.card) {
-      try {
-        const freshCard = await plugin.card.findOne(currentCardData.card._id);
-        if (freshCard) {
-          await freshCard.updateCardRepetitionStatus(score);
-        }
-        // Trigger refresh of table data to show new rating
-        setTableRefreshKey(prev => prev + 1);
-      } catch (error) {
-        console.error("Error updating card status:", error);
-      }
+      pendingRatingRef.current = { cardId: currentCardData.card._id, score };
+      setIsRatingInFlight(true);
     }
+    // Navigate immediately for instant feedback
     goToNextCard();
   };
 
-  const handleAgain = async () => {
+  const handleAgain = () => {
+    // Store rating to apply after the next card's loadContent finishes,
+    // so updateCardRepetitionStatus doesn't block bridge calls during content load.
     if (currentCardData?.card) {
-      try {
-        const freshCard = await plugin.card.findOne(currentCardData.card._id);
-        if (freshCard) {
-          await freshCard.updateCardRepetitionStatus(QueueInteractionScore.AGAIN);
-        }
-        // Trigger refresh of table data to show new rating
-        setTableRefreshKey(prev => prev + 1);
-      } catch (error) {
-        console.error("Error updating card status:", error);
-      }
+      pendingRatingRef.current = { cardId: currentCardData.card._id, score: QueueInteractionScore.AGAIN };
+      setIsRatingInFlight(true);
     }
 
-    // Move card to random position in second half of remaining queue
+    // Move card to random position in second half of remaining queue immediately
     if (currentCardData && queueOrder.length > 1) {
       const newQueue = [...queueOrder];
       const [againCard] = newQueue.splice(currentIndex, 1);
@@ -788,20 +881,41 @@ export function MyRemNoteQueue({
 
       newQueue.splice(insertPosition, 0, againCard);
       setQueueOrder(newQueue);
+      // Sync cardsData order to match new queue — no full rebuild needed
+      setCardsData(prev => {
+        const cardMap = new Map(prev.map(cd => [cd.cardId, cd]));
+        return newQueue.map(qi => cardMap.get(qi.card._id)).filter(Boolean) as typeof prev;
+      });
 
       // Notify parent of card interaction
       if (onCardInteraction) {
         onCardInteraction(newQueue);
       }
 
-      setRenderKey(prev => prev + 1);
-
       // Stay at same index (next card shifted into current position)
       if (currentIndex >= newQueue.length) {
         setCurrentIndex(newQueue.length - 1);
       }
       setAnswerState("question");
-    } else {
+
+      // Edge case: if the card was re-inserted at the same position (e.g., last card in queue),
+      // currentCardData won't change and loadContent won't re-run — fire the pending rating now.
+      const effectiveIndex = Math.min(currentIndex, newQueue.length - 1);
+      if (newQueue[effectiveIndex]?.card._id === currentCardData.card._id) {
+        const _p = pendingRatingRef.current;
+        if (_p) {
+          pendingRatingRef.current = null;
+          void (async () => {
+            try {
+              const fc = await plugin.card.findOne(_p.cardId);
+              if (fc) await fc.updateCardRepetitionStatus(_p.score);
+              void updateSingleCardData(_p.cardId);
+            } catch (e) { console.error("Error updating card status (same-card again):", e); }
+            finally { setIsRatingInFlight(false); }
+          })();
+        }
+      }
+      } else {
       // Only one card left, just advance (will complete the queue)
       goToNextCard();
     }
@@ -811,7 +925,6 @@ export function MyRemNoteQueue({
     if (currentIndex < queueOrder.length - 1) {
       const newIndex = currentIndex + 1;
       setCurrentIndex(newIndex);
-      setRenderKey(prev => prev + 1);
       setAnswerState("question");
       // Notify parent of index change
       if (onCurrentIndexChange) {
@@ -836,12 +949,15 @@ export function MyRemNoteQueue({
       const [skippedCard] = newQueue.splice(currentIndex, 1);
       newQueue.push(skippedCard);
       setQueueOrder(newQueue);
+      // Sync cardsData order to match new queue — no full rebuild needed
+      setCardsData(prev => {
+        const cardMap = new Map(prev.map(cd => [cd.cardId, cd]));
+        return newQueue.map(qi => cardMap.get(qi.card._id)).filter(Boolean) as typeof prev;
+      });
       // Notify parent of card interaction so it can persist to storage
       if (onCardInteraction) {
         onCardInteraction(newQueue);
       }
-      // Increment render key to force RemViewer to fully re-render
-      setRenderKey(prev => prev + 1);
       // Keep the same index to show the next card (which shifted into current position)
       // But if we were at the last card, stay at the new last position
       if (currentIndex >= newQueue.length) {
@@ -1023,7 +1139,7 @@ export function MyRemNoteQueue({
             childrenRems.length > 0 ? (
               <>
                 {regularChildren.map((childRem) => (
-                  <div key={`question-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                  <div key={`question-${childRem._id}`} style={childRemStyle}>
                     <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
                       <MyRemnoteRemViewer 
                         remId={childRem._id}
@@ -1069,8 +1185,8 @@ export function MyRemNoteQueue({
         </div>
 
         {/* Answer (Back/children for forward cards, Front/rem for backward cards) */}
-        {answerState === "answer" && (
-          <div style={answerStyle}>
+        {/* Always mounted so RemViewers load in the background; visibility toggled via display */}
+        <div style={{ ...answerStyle, display: answerState === "answer" ? "block" : "none" }}>
             {cardType === 'backward' ? (
               // Backward card: show the rem itself as the answer (or parent for Property cards)
               <>
@@ -1098,7 +1214,7 @@ export function MyRemNoteQueue({
                   <>
                     <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid var(--border-color, #ccc)" }} />
                     {extraDetailChildren.map((childRem) => (
-                      <div key={`extra-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                      <div key={`extra-${childRem._id}`} style={childRemStyle}>
                         <MyRemnoteRemViewer 
                           remId={childRem._id}
                           loadingText="(loading...)"
@@ -1131,7 +1247,7 @@ export function MyRemNoteQueue({
                   <>
                     {/* Regular answers (without Extra Card Detail powerup) */}
                     {regularChildren.map((childRem) => (
-                      <div key={`answer-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                      <div key={`answer-${childRem._id}`} style={childRemStyle}>
                         <MyRemnoteRemViewer 
                           remId={childRem._id}
                           loadingText="(loading...)"
@@ -1147,7 +1263,7 @@ export function MyRemNoteQueue({
                     
                     {/* Extra Card Detail answers */}
                     {extraDetailChildren.map((childRem) => (
-                      <div key={`extra-${childRem._id}-${renderKey}`} style={childRemStyle}>
+                      <div key={`extra-${childRem._id}`} style={childRemStyle}>
                         <MyRemnoteRemViewer 
                           remId={childRem._id}
                           loadingText="(loading...)"
@@ -1167,7 +1283,6 @@ export function MyRemNoteQueue({
               </>
             )}
           </div>
-        )}
       </div>
 
       {/* Buttons */}
@@ -1230,29 +1345,37 @@ export function MyRemNoteQueue({
               Skip
             </button>
             <button
-              style={{...forgetButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
-              onClick={handleAgain} title="Moves the card to somewhere later in the queue."
+              style={{...forgetButtonStyle, display: 'flex', alignItems: 'center', gap: '6px', ...(isRatingInFlight ? { opacity: 0.5, cursor: 'not-allowed' } : {})}}
+              onClick={handleAgain}
+              disabled={isRatingInFlight}
+              title={isRatingInFlight ? "Waiting for previous rating to finish…" : "Moves the card to somewhere later in the queue."}
             >
               <img src={scoreToImage.get("Forgot")} alt="Forgot" style={{ width: '20px', height: '20px' }} />
               {/*{predictedIntervals.again}*/}
             </button>
             <button
-              style={{...partialButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
+              style={{...partialButtonStyle, display: 'flex', alignItems: 'center', gap: '6px', ...(isRatingInFlight ? { opacity: 0.5, cursor: 'not-allowed' } : {})}}
               onClick={() => handleAnswer(QueueInteractionScore.HARD)}
+              disabled={isRatingInFlight}
+              title={isRatingInFlight ? "Waiting for previous rating to finish…" : undefined}
             >
               <img src={scoreToImage.get("Partially recalled")} alt="Partially Recalled" style={{ width: '20px', height: '20px' }} />
               {predictedIntervals.hard}
             </button>
             <button
-              style={{...recalledButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
+              style={{...recalledButtonStyle, display: 'flex', alignItems: 'center', gap: '6px', ...(isRatingInFlight ? { opacity: 0.5, cursor: 'not-allowed' } : {})}}
               onClick={() => handleAnswer(QueueInteractionScore.GOOD)}
+              disabled={isRatingInFlight}
+              title={isRatingInFlight ? "Waiting for previous rating to finish…" : undefined}
             >
               <img src={scoreToImage.get("Recalled with effort")} alt="Recalled With Effort" style={{ width: '20px', height: '20px' }} />
               {predictedIntervals.good}
             </button>
             <button
-              style={{...easyButtonStyle, display: 'flex', alignItems: 'center', gap: '6px'}}
+              style={{...easyButtonStyle, display: 'flex', alignItems: 'center', gap: '6px', ...(isRatingInFlight ? { opacity: 0.5, cursor: 'not-allowed' } : {})}}
               onClick={() => handleAnswer(QueueInteractionScore.EASY)}
+              disabled={isRatingInFlight}
+              title={isRatingInFlight ? "Waiting for previous rating to finish…" : undefined}
             >
               <img src={scoreToImage.get("Easily recalled")} alt="Easily Recalled" style={{ width: '20px', height: '20px' }} />
               {predictedIntervals.easy}

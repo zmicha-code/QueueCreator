@@ -1443,7 +1443,7 @@ function CustomQueueWidget() {
     };
 
     // Handle card interaction (skip or rated)
-    const handleCardInteraction = async (newOrder: SearchData[]) => {
+    const _handleCardInteraction = async (newOrder: SearchData[]) => {
         // Update local state with the new order
         setSearchDataList(newOrder);
         
@@ -1456,6 +1456,19 @@ function CustomQueueWidget() {
         
         // Refresh cardsData for table display
         setCardsData(await questionsFromSearchData(plugin, newOrder));
+    };
+    
+    const handleCardInteraction = async (newOrder: SearchData[]) => {
+      setSearchDataList(newOrder);
+
+      const storableSearchData = newOrder.map(sd => ({
+        remId: sd.rem._id,
+        cardId: sd.card ? sd.card._id : null
+      }));
+      await plugin.storage.setSynced("currentQueueSearchData", storableSearchData);
+
+      // Hintergrund: blockiert nicht den Übergang zur nächsten Karte
+      void questionsFromSearchData(plugin, newOrder).then(setCardsData);
     };
 
     const openCurrentQueueRem = async () => {
